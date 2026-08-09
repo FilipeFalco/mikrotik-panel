@@ -19,13 +19,13 @@ it('renders a managed port and opens its management screen', () => {
   expect(onManage).toHaveBeenCalledWith('ether2');
 });
 
-it('uses the local WAN role instead of assuming ether1 is Internet', () => {
+it('renders an enabled local WAN instead of assuming ether1 is Internet', () => {
   const wan: Port = {
     ...port,
     interfaceName: 'ether5',
     friendlyName: 'Link dedicado',
     role: 'WAN',
-    enabled: false,
+    enabled: true,
   };
 
   render(<Dashboard ports={[wan, port]} onManage={vi.fn()} />);
@@ -36,4 +36,20 @@ it('uses the local WAN role instead of assuming ether1 is Internet', () => {
   const clientCards = screen.getByLabelText('Clientes configurados');
   expect(within(clientCards).getByText('Cliente João')).toBeInTheDocument();
   expect(within(clientCards).queryByText('Link dedicado')).not.toBeInTheDocument();
+});
+
+it('does not render a disabled local WAN while keeping enabled CLIENT ports visible', () => {
+  const wan: Port = {
+    ...port,
+    interfaceName: 'ether5',
+    friendlyName: 'Link dedicado',
+    role: 'WAN',
+    enabled: false,
+  };
+
+  render(<Dashboard ports={[wan, port]} onManage={vi.fn()} />);
+
+  expect(screen.queryByLabelText('Tráfego da internet')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Clientes configurados')).toBeInTheDocument();
+  expect(screen.getByText('Cliente João')).toBeInTheDocument();
 });

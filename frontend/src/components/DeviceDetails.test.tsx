@@ -48,3 +48,23 @@ it('keeps local metadata editable while disabling RouterOS controls in read-only
 
   expect(onSave).toHaveBeenCalledWith(device, 'Notebook da sala', '', 100_000_000, 20_000_000);
 });
+
+it('saves independently edited download and upload limits when RouterOS controls are enabled', () => {
+  const onSave = vi.fn();
+  render(
+    <DeviceDetails
+      device={device}
+      busy={false}
+      readOnly={false}
+      onClose={vi.fn()}
+      onSave={onSave}
+      onRequestBlock={vi.fn()}
+    />,
+  );
+
+  fireEvent.change(screen.getByLabelText('Limite de download em Mbps'), { target: { value: '80' } });
+  fireEvent.change(screen.getByLabelText('Limite de upload em Mbps'), { target: { value: '15' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }));
+
+  expect(onSave).toHaveBeenCalledWith(device, '', '', 80_000_000, 15_000_000);
+});
