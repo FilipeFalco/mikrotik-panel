@@ -85,17 +85,13 @@ export default function App() {
   }, []);
 
   const refreshRouterData = useCallback(async () => {
-    const [nextPorts, nextDevices] = await Promise.allSettled([api.ports(), api.devices()]);
-
-    if (nextPorts.status === 'fulfilled') setPorts(nextPorts.value);
-    if (nextDevices.status === 'fulfilled') setDevices(nextDevices.value);
-
-    if (nextPorts.status === 'rejected') {
-      setError(errorMessage(nextPorts.reason, 'Não foi possível obter os dados do RouterOS.'));
-    } else if (nextDevices.status === 'rejected') {
-      setError(errorMessage(nextDevices.reason, 'Não foi possível obter os dados do RouterOS.'));
-    } else {
+    try {
+      const nextPorts = await api.ports();
+      setPorts(nextPorts);
+      setDevices(nextPorts.flatMap((port) => port.devices));
       setError(null);
+    } catch (reason) {
+      setError(errorMessage(reason, 'Não foi possível obter os dados do RouterOS.'));
     }
   }, []);
 
@@ -156,10 +152,11 @@ export default function App() {
   };
 
   const retryConnection = () => {
+    const wasConnected = systemStatus?.connected === true;
     setTesting(true);
     setError(null);
     void refreshSystemStatus()
-      .then((status) => status?.connected ? refreshRouterData() : undefined)
+      .then((status) => status?.connected && wasConnected ? refreshRouterData() : undefined)
       .finally(() => setTesting(false));
   };
 
@@ -205,17 +202,24 @@ export default function App() {
   };
 
   const testConnection = () => {
+    const wasConnected = systemStatus?.connected === true;
     setTesting(true);
     setError(null);
     void api.testConnection()
       .then(async (status) => {
         setSystemStatus(status);
         await refreshDiagnostics();
-        if (status.connected) await refreshRouterData();
+        if (status.connected && wasConnected) await refreshRouterData();
       })
       .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível testar a conexão.')))
       .finally(() => setTesting(false));
   };
+
+  const routerConnectionLabel = systemStatus?.mockMode
+    ? 'Dados simulados'
+    : systemStatus?.connected
+      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? ' · Somente leitura' : ''}`
+      : 'RouterOS';
 
   const content = () => {
     if (loading) return <div className="loading-state"><span className="loading-spinner" /><p>Carregando o painel local…</p></div>;
@@ -233,11 +237,12 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">M</span><div><strong>MikroTik</strong><small>Local Manager</small></div></div>
         <nav aria-label="Navegação principal">{navItems.map((item) => <button key={item.id} type="button" className={view === item.id ? 'nav-item active' : 'nav-item'} aria-current={view === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.symbol}</span>{item.label}</button>)}</nav>
-        <div className="sidebar-foot"><span>Local only</span><small>v0.1 · Fase 1</small></div>
+        <div className="sidebar-foot"><span>Local only</span><small>v0.2 · Fase 2</small></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{systemStatus?.mockMode ? 'Dados simulados' : 'RouterOS'}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
+        <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
         {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
+        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>RouterOS em modo somente leitura.</strong><span>Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.</span></section>}
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>

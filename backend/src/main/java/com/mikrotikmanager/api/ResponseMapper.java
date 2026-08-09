@@ -18,7 +18,7 @@ final class ResponseMapper {
 
     static SystemStatusResponse systemStatus(GatewayConnectionStatus status) {
         return new SystemStatusResponse(status.connected(), status.mockMode(), status.host(), status.port(),
-                status.routerOsVersion(), status.latencyMillis(), status.message(), status.fastTrackDetected());
+                status.routerOsVersion(), status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected());
     }
 
     static DeviceResponse device(DeviceView view) {

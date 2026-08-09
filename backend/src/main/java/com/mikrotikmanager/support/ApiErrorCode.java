@@ -3,6 +3,8 @@ package com.mikrotikmanager.support;
 public enum ApiErrorCode {
     MIKROTIK_UNAVAILABLE,
     MIKROTIK_AUTHENTICATION_FAILED,
+    MIKROTIK_BAD_RESPONSE,
+    MIKROTIK_TLS_ERROR,
     DEVICE_NOT_FOUND,
     PORT_NOT_FOUND,
     INVALID_SPEED_LIMIT,

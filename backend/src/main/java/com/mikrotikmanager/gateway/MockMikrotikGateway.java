@@ -1,6 +1,8 @@
 package com.mikrotikmanager.gateway;
 
 import com.mikrotikmanager.domain.DeviceStatus;
+import com.mikrotikmanager.domain.GatewayDiagnosticCheck;
+import com.mikrotikmanager.domain.GatewayDiagnostics;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.RouterInterface;
@@ -17,7 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /** In-memory RouterOS substitute used for local development and automated tests. */
-public final class MockMikrotikGateway implements MikrotikGateway {
+public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagnosticsGateway {
     private final String host;
     private final int port;
     private final Map<String, RouterInterface> interfaces = new LinkedHashMap<>();
@@ -34,7 +36,19 @@ public final class MockMikrotikGateway implements MikrotikGateway {
     public synchronized GatewayConnectionStatus connectionStatus() {
         return new GatewayConnectionStatus(
                 true, true, host, port, "7.18.2 (mock)", 2L,
-                "Executando com dados simulados; nenhuma chamada foi enviada ao MikroTik.", true);
+                "Executando com dados simulados; nenhuma chamada foi enviada ao MikroTik.", false, true);
+    }
+
+    @Override
+    public synchronized GatewayDiagnostics diagnostics() {
+        GatewayConnectionStatus status = connectionStatus();
+        return new GatewayDiagnostics(status, true, List.of(
+                new GatewayDiagnosticCheck("REST API", true, "Simulado"),
+                new GatewayDiagnosticCheck("Interfaces", true, "Dados simulados disponíveis"),
+                new GatewayDiagnosticCheck("DHCP", true, "Dados simulados disponíveis"),
+                new GatewayDiagnosticCheck("Queues", true, "Dados simulados disponíveis"),
+                new GatewayDiagnosticCheck("FastTrack", true, "Simulado: detectado")
+        ));
     }
 
     @Override

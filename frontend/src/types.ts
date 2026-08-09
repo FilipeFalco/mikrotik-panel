@@ -3,6 +3,7 @@ export type DeviceStatus = 'ONLINE' | 'OFFLINE' | 'BLOCKED' | 'UNKNOWN';
 export interface SystemStatus {
   connected: boolean;
   mockMode: boolean;
+  readOnly: boolean;
   host: string;
   port: number;
   routerOsVersion?: string | null;
