@@ -78,18 +78,17 @@ public class PortService {
         writeGuard.checkWriteAllowed();
         return lockManager.withLock("port:" + interfaceName, () -> {
             ensureInterfaceExists(interfaceName);
-            ManagedPort previous = managedPortRepository.findByInterfaceName(interfaceName).orElse(null);
             ManagedPort requested = new ManagedPort(
                     0, interfaceName, friendlyName.trim(), description, normalizedNetwork, dhcpServer, enabled, Instant.now(), Instant.now()
             );
             try {
                 ManagedPort saved = managedPortRepository.save(requested);
                 auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
-                        formatConfiguration(previous), formatConfiguration(saved), true, null);
+                        "configuration", "configuration", true, null);
                 return saved;
             } catch (RuntimeException exception) {
                 auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
-                        formatConfiguration(previous), formatConfiguration(requested), false, safeMessage(exception));
+                        "configuration", "configuration", false, safeMessage(exception));
                 throw exception;
             }
         });
@@ -166,16 +165,6 @@ public class PortService {
 
     private String format(SpeedLimit limit) {
         return "download=" + limit.downloadBps() + "bps, upload=" + limit.uploadBps() + "bps";
-    }
-
-    private String formatConfiguration(ManagedPort port) {
-        if (port == null) {
-            return "absent";
-        }
-        return "friendlyName=" + port.friendlyName()
-                + ", network=" + port.network()
-                + ", dhcpServer=" + port.dhcpServer()
-                + ", enabled=" + port.enabled();
     }
 
     private String safeMessage(RuntimeException exception) {

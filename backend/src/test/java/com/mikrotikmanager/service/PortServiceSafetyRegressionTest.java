@@ -68,12 +68,11 @@ class PortServiceSafetyRegressionTest {
     }
 
     @Test
-    void normalizesPortNetworkBeforePersistenceAndOmitsSensitiveDescriptionFromAudit() {
+    void normalizesPortNetworkBeforePersistenceAndKeepsConfigurationAuditFreeOfUserInput() {
         MockMikrotikGateway gateway = new MockMikrotikGateway("10.0.0.1", 443);
         ManagedPortRepository portRepository = mock(ManagedPortRepository.class);
         ManagedDeviceRepository deviceRepository = mock(ManagedDeviceRepository.class);
         AuditLogRepository auditRepository = mock(AuditLogRepository.class);
-        when(portRepository.findByInterfaceName("ether2")).thenReturn(Optional.empty());
         when(portRepository.save(any(ManagedPort.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PortService service = service(gateway, portRepository, deviceRepository, auditRepository, true, false);
@@ -87,9 +86,9 @@ class PortServiceSafetyRegressionTest {
 
         ArgumentCaptor<String> newAuditValue = ArgumentCaptor.forClass(String.class);
         verify(auditRepository).insert(eq("PORT_CONFIGURATION_UPDATED"), eq("PORT"), eq("ether2"),
-                eq("absent"), newAuditValue.capture(), eq(true), eq(null));
+                eq("configuration"), newAuditValue.capture(), eq(true), eq(null));
         assertThat(newAuditValue.getValue())
-                .contains("network=10.10.10.0/24")
+                .isEqualTo("configuration")
                 .doesNotContain("router-secret")
                 .doesNotContain("password=");
     }
