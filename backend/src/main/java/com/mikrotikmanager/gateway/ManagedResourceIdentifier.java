@@ -21,6 +21,29 @@ public final class ManagedResourceIdentifier {
         return comment != null && comment.startsWith(PREFIX + ":");
     }
 
+    /**
+     * Returns whether the comment belongs to exactly this device. A generic MTMGR
+     * prefix is deliberately insufficient for future destructive operations.
+     */
+    public static boolean isOwnedByDevice(String comment, String macAddress) {
+        if (comment == null) {
+            return false;
+        }
+        try {
+            return comment.equals(forDevice(macAddress));
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * Returns whether the comment belongs to exactly this port.
+     */
+    public static boolean isOwnedByPort(String comment, String interfaceName) {
+        return comment != null && interfaceName != null && !interfaceName.isBlank()
+                && comment.equals(forPort(interfaceName));
+    }
+
     public static String normalizeMac(String macAddress) {
         if (macAddress == null || !macAddress.matches("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")) {
             throw new IllegalArgumentException("Endereço MAC inválido.");

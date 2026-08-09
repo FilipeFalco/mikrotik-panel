@@ -16,6 +16,20 @@ class ManagedResourceIdentifierTest {
     }
 
     @Test
+    void requiresExactOwnershipForDevicesAndPorts() {
+        assertThat(ManagedResourceIdentifier.isOwnedByDevice("MTMGR:DEVICE:AA-BB-CC-DD-EE-FF", "aa:bb:cc:dd:ee:ff"))
+                .isTrue();
+        assertThat(ManagedResourceIdentifier.isOwnedByDevice("MTMGR:DEVICE:AA-BB-CC-DD-EE-00", "AA:BB:CC:DD:EE:FF"))
+                .isFalse();
+        assertThat(ManagedResourceIdentifier.isOwnedByDevice("MTMGR:anything", "AA:BB:CC:DD:EE:FF"))
+                .isFalse();
+
+        assertThat(ManagedResourceIdentifier.isOwnedByPort("MTMGR:PORT:ether2", "ether2")).isTrue();
+        assertThat(ManagedResourceIdentifier.isOwnedByPort("MTMGR:PORT:ether3", "ether2")).isFalse();
+        assertThat(ManagedResourceIdentifier.isOwnedByPort("MTMGR:anything", "ether2")).isFalse();
+    }
+
+    @Test
     void rejectsMalformedMacAddresses() {
         assertThatThrownBy(() -> ManagedResourceIdentifier.normalizeMac("not-a-mac"))
                 .isInstanceOf(IllegalArgumentException.class);

@@ -29,6 +29,7 @@ mikrotik:
   password: ${MIKROTIK_PASSWORD:}
   verify-ssl: ${MIKROTIK_VERIFY_SSL:true}
   mock-mode: ${MIKROTIK_MOCK_MODE:true}
+  write-enabled: ${MIKROTIK_WRITE_ENABLED:false}
 
 logging:
   level:

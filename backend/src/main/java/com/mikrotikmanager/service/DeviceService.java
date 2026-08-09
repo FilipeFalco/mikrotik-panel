@@ -30,15 +30,17 @@ public class DeviceService {
     private final ManagedPortRepository managedPortRepository;
     private final OperationLockManager lockManager;
     private final AuditService auditService;
+    private final MikrotikWriteGuard writeGuard;
 
     public DeviceService(MikrotikGateway gateway, ManagedDeviceRepository managedDeviceRepository,
                          ManagedPortRepository managedPortRepository, OperationLockManager lockManager,
-                         AuditService auditService) {
+                         AuditService auditService, MikrotikWriteGuard writeGuard) {
         this.gateway = gateway;
         this.managedDeviceRepository = managedDeviceRepository;
         this.managedPortRepository = managedPortRepository;
         this.lockManager = lockManager;
         this.auditService = auditService;
+        this.writeGuard = writeGuard;
     }
 
     public List<DeviceView> listDevices() {
@@ -67,14 +69,26 @@ public class DeviceService {
 
     public DeviceView updateMetadata(String macAddress, String friendlyName, String notes) {
         String normalized = normalize(macAddress);
-        getDevice(normalized);
-        managedDeviceRepository.save(normalized, friendlyName, notes);
-        return getDevice(normalized);
+        writeGuard.checkWriteAllowed();
+        return lockManager.withLock("device:" + normalized, () -> {
+            getDevice(normalized);
+            try {
+                managedDeviceRepository.save(normalized, friendlyName, notes);
+                auditService.record("DEVICE_METADATA_UPDATED", "DEVICE", normalized,
+                        "metadata", "metadata", true, null);
+                return getDevice(normalized);
+            } catch (RuntimeException exception) {
+                auditService.record("DEVICE_METADATA_UPDATED", "DEVICE", normalized,
+                        "metadata", "metadata", false, safeMessage(exception));
+                throw exception;
+            }
+        });
     }
 
     public DeviceView setSpeed(String macAddress, SpeedLimit requestedLimit) {
         validateSpeed(requestedLimit);
         String normalized = normalize(macAddress);
+        writeGuard.checkWriteAllowed();
         return lockManager.withLock("device:" + normalized, () -> {
             DeviceView device = getDevice(normalized);
             validateAgainstPort(device.routerDevice(), requestedLimit);
@@ -103,6 +117,7 @@ public class DeviceService {
 
     private DeviceView changeBlockState(String macAddress, boolean block) {
         String normalized = normalize(macAddress);
+        writeGuard.checkWriteAllowed();
         return lockManager.withLock("device:" + normalized, () -> {
             DeviceView device = getDevice(normalized);
             boolean previous = device.routerDevice().blocked();
