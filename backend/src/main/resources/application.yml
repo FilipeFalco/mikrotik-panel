@@ -1,0 +1,35 @@
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: never
+
+spring:
+  application:
+    name: mikrotik-local-manager
+  datasource:
+    url: jdbc:sqlite:${APP_DATA_DIR:../data}/mikrotik-manager.db
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      maximum-pool-size: 1
+      minimum-idle: 1
+  flyway:
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  jackson:
+    default-property-inclusion: non_null
+
+app:
+  frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:3000}
+
+mikrotik:
+  host: ${MIKROTIK_HOST:10.0.0.1}
+  port: ${MIKROTIK_PORT:443}
+  username: ${MIKROTIK_USERNAME:}
+  password: ${MIKROTIK_PASSWORD:}
+  verify-ssl: ${MIKROTIK_VERIFY_SSL:true}
+  mock-mode: ${MIKROTIK_MOCK_MODE:true}
+
+logging:
+  level:
+    com.mikrotikmanager: INFO
