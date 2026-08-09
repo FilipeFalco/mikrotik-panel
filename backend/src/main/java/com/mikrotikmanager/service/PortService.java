@@ -1,6 +1,7 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.gateway.MikrotikGateway;
@@ -16,7 +17,6 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -42,9 +42,18 @@ public class PortService {
     public List<PortView> listPorts() {
         Map<String, ManagedPort> configurations = managedPortRepository.findAll().stream()
                 .collect(Collectors.toMap(ManagedPort::interfaceName, Function.identity()));
-        return gateway.listInterfaces().stream()
+        List<RouterInterface> interfaces = gateway.listInterfaces();
+        Map<String, List<DeviceView>> devicesByInterface = deviceService.listDevices().stream()
+                .collect(Collectors.groupingBy(device -> device.routerDevice().interfaceName()));
+        Map<String, SpeedLimit> speedsByInterface = gateway.listPortSpeeds();
+
+        return interfaces.stream()
                 .filter(routerInterface -> "ether".equalsIgnoreCase(routerInterface.type()))
-                .map(routerInterface -> toView(routerInterface, configurations.get(routerInterface.name())))
+                .map(routerInterface -> toView(
+                        routerInterface,
+                        configurations.get(routerInterface.name()),
+                        speedsByInterface.getOrDefault(routerInterface.name(), SpeedLimit.UNLIMITED),
+                        devicesByInterface.getOrDefault(routerInterface.name(), List.of())))
                 .sorted(Comparator.comparing(view -> view.routerInterface().name()))
                 .toList();
     }
@@ -73,6 +82,7 @@ public class PortService {
         validateSpeed(requestedLimit);
         return lockManager.withLock("port:" + interfaceName, () -> {
             ensureInterfaceExists(interfaceName);
+            validateAgainstDevices(interfaceName, requestedLimit, gateway.listDevices());
             SpeedLimit previous = gateway.getPortSpeed(interfaceName);
             try {
                 log.info("Updating port speed interface={} downloadBps={} uploadBps={}", interfaceName,
@@ -88,9 +98,37 @@ public class PortService {
         });
     }
 
-    private PortView toView(RouterInterface routerInterface, ManagedPort configuration) {
-        List<DeviceView> devices = deviceService.listByPort(routerInterface.name());
-        return new PortView(routerInterface, configuration, gateway.getPortSpeed(routerInterface.name()), devices);
+    private PortView toView(RouterInterface routerInterface, ManagedPort configuration, SpeedLimit speedLimit,
+                            List<DeviceView> devices) {
+        return new PortView(routerInterface, configuration, speedLimit, devices);
+    }
+
+    private void validateAgainstDevices(String interfaceName, SpeedLimit requestedLimit, List<RouterDevice> devices) {
+        List<RouterDevice> exceedingDevices = devices.stream()
+                .filter(device -> interfaceName.equals(device.interfaceName()))
+                .filter(device -> exceedsPortLimit(device.speedLimit(), requestedLimit))
+                .toList();
+        if (exceedingDevices.isEmpty()) {
+            return;
+        }
+
+        String deviceNames = exceedingDevices.stream()
+                .map(this::displayName)
+                .collect(Collectors.joining(", "));
+        throw new ApiException(ApiErrorCode.INVALID_SPEED_LIMIT, HttpStatus.BAD_REQUEST,
+                "O limite da porta não pode ser menor que o limite configurado para: " + deviceNames + ".");
+    }
+
+    private boolean exceedsPortLimit(SpeedLimit deviceLimit, SpeedLimit portLimit) {
+        boolean exceedsDownload = portLimit.downloadBps() > 0
+                && deviceLimit.downloadBps() > portLimit.downloadBps();
+        boolean exceedsUpload = portLimit.uploadBps() > 0
+                && deviceLimit.uploadBps() > portLimit.uploadBps();
+        return exceedsDownload || exceedsUpload;
+    }
+
+    private String displayName(RouterDevice device) {
+        return device.hostname() == null || device.hostname().isBlank() ? device.macAddress() : device.hostname();
     }
 
     private void ensureInterfaceExists(String interfaceName) {

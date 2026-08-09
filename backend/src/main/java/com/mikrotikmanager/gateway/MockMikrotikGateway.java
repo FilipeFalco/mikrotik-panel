@@ -48,6 +48,11 @@ public final class MockMikrotikGateway implements MikrotikGateway {
     }
 
     @Override
+    public synchronized Map<String, SpeedLimit> listPortSpeeds() {
+        return Map.copyOf(portSpeeds);
+    }
+
+    @Override
     public synchronized Optional<RouterDevice> findDevice(String macAddress) {
         return Optional.ofNullable(devices.get(normalize(macAddress))).map(MockDeviceState::toDevice);
     }

@@ -6,6 +6,7 @@ import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Safe placeholder used until the read-only RouterOS REST adapter is delivered in Phase 2. */
@@ -31,6 +32,11 @@ public final class UnavailableMikrotikGateway implements MikrotikGateway {
 
     @Override
     public List<RouterDevice> listDevices() {
+        throw unavailable();
+    }
+
+    @Override
+    public Map<String, SpeedLimit> listPortSpeeds() {
         throw unavailable();
     }
 

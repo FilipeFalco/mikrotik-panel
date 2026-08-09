@@ -6,6 +6,7 @@ import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -18,6 +19,12 @@ public interface MikrotikGateway {
     List<RouterInterface> listInterfaces();
 
     List<RouterDevice> listDevices();
+
+    /**
+     * Returns the configured speed limits for all interfaces in one gateway operation.
+     * Interfaces absent from the result are treated as unlimited by callers.
+     */
+    Map<String, SpeedLimit> listPortSpeeds();
 
     Optional<RouterDevice> findDevice(String macAddress);
 
