@@ -1,0 +1,28 @@
+# Local application data and configuration
+.env
+.env.*
+!.env.example
+data/*.db
+data/*.db-*
+config/local.yml
+
+# Java / Maven
+backend/target/
+.mvn/wrapper/dists/
+*.class
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Runtime sockets that can appear in the workspace
+pulse
+wayland-0
+wayland-0.lock
