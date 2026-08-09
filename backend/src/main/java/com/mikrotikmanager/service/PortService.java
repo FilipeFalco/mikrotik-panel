@@ -75,7 +75,6 @@ public class PortService {
                     "A rede deve estar no formato CIDR, por exemplo 10.10.10.0/24.");
         }
         String normalizedNetwork = CidrValidator.normalize(network);
-        writeGuard.checkWriteAllowed();
         return lockManager.withLock("port:" + interfaceName, () -> {
             ensureInterfaceExists(interfaceName);
             ManagedPort requested = new ManagedPort(
@@ -96,7 +95,7 @@ public class PortService {
 
     public PortView setSpeed(String interfaceName, SpeedLimit requestedLimit) {
         validateSpeed(requestedLimit);
-        writeGuard.checkWriteAllowed();
+        writeGuard.checkRouterWriteAllowed();
         return lockManager.withLock("port:" + interfaceName, () -> {
             ensureInterfaceExists(interfaceName);
             validateAgainstDevices(interfaceName, requestedLimit, gateway.listDevices());

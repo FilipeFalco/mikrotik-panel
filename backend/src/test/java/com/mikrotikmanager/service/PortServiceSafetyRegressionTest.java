@@ -2,7 +2,9 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
+import com.mikrotikmanager.domain.TrafficRate;
 import com.mikrotikmanager.gateway.MikrotikGateway;
 import com.mikrotikmanager.gateway.MockMikrotikGateway;
 import com.mikrotikmanager.persistence.AuditLogRepository;
@@ -23,6 +25,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class PortServiceSafetyRegressionTest {
@@ -47,7 +50,27 @@ class PortServiceSafetyRegressionTest {
     }
 
     @Test
-    void rejectsPortMutationsBeforeGatewayRepositoriesOrAuditWhenRealWritesAreDisabled() {
+    void permitsLocalPortConfigurationWhenRealRouterWritesAreDisabled() {
+        MikrotikGateway gateway = mock(MikrotikGateway.class);
+        ManagedPortRepository portRepository = mock(ManagedPortRepository.class);
+        AuditLogRepository auditRepository = mock(AuditLogRepository.class);
+        when(gateway.listInterfaces()).thenReturn(List.of(new RouterInterface("ether2", "ether", true, false,
+                TrafficRate.UNAVAILABLE)));
+        when(portRepository.save(any(ManagedPort.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PortService service = new PortService(gateway, portRepository, mock(DeviceService.class),
+                new OperationLockManager(), new AuditService(auditRepository), writeGuard(false, false));
+
+        service.updateConfiguration("ether2", "Clientes", "Configuração local", "10.10.10.0/24",
+                "dhcp-clientes", true);
+
+        verify(portRepository).save(any(ManagedPort.class));
+        verify(gateway).listInterfaces();
+        verifyNoMoreInteractions(gateway);
+    }
+
+    @Test
+    void rejectsRouterPortSpeedBeforeGatewayRepositoriesOrAuditWhenRealWritesAreDisabled() {
         MikrotikGateway gateway = mock(MikrotikGateway.class);
         ManagedPortRepository portRepository = mock(ManagedPortRepository.class);
         ManagedDeviceRepository deviceRepository = mock(ManagedDeviceRepository.class);
@@ -56,10 +79,6 @@ class PortServiceSafetyRegressionTest {
         PortService service = new PortService(gateway, portRepository, deviceService,
                 new OperationLockManager(), new AuditService(auditRepository), writeGuard(false, false));
 
-        assertThatThrownBy(() -> service.updateConfiguration(
-                "ether2", "Clientes", "", "10.10.10.0/24", "dhcp-clientes", true))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("escrita");
         assertThatThrownBy(() -> service.setSpeed("ether2", SpeedLimit.UNLIMITED))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("escrita");

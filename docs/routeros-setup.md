@@ -50,7 +50,7 @@ MIKROTIK_MOCK_MODE=true
 MIKROTIK_WRITE_ENABLED=false
 ```
 
-`MIKROTIK_WRITE_ENABLED=false` é o padrão e é o kill switch para a futura integração real. O mock mode continua permitindo as mutações simuladas da UI, porque elas existem apenas em memória. Em contraste, com `MIKROTIK_MOCK_MODE=false` e `MIKROTIK_WRITE_ENABLED=false`, qualquer endpoint mutável é recusado antes do gateway.
+`MIKROTIK_WRITE_ENABLED=false` é o padrão e é o kill switch para a futura integração real. O mock mode continua permitindo as mutações simuladas da UI, porque elas existem apenas em memória. Em contraste, com `MIKROTIK_MOCK_MODE=false` e `MIKROTIK_WRITE_ENABLED=false`, somente operações que alterariam o RouterOS são recusadas antes do gateway; nomes amigáveis, observações e configurações locais de portas continuam editáveis no SQLite.
 
 Na Fase 1, não mude `MIKROTIK_MOCK_MODE=false` para tentar integrar o equipamento: ainda não existe `RouterOsRestGateway` funcional, não há chamadas a `/rest` e o gateway indisponível não acessa a rede. Em uma futura Fase 2, essa variável será usada somente para validar chamadas de leitura; essa fase não modificará a configuração RouterOS.
 

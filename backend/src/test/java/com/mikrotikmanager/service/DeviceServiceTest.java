@@ -1,8 +1,11 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.config.MikrotikProperties;
+import com.mikrotikmanager.domain.DeviceStatus;
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.SpeedLimit;
+import com.mikrotikmanager.domain.TrafficRate;
 import com.mikrotikmanager.gateway.MikrotikGateway;
 import com.mikrotikmanager.gateway.MockMikrotikGateway;
 import com.mikrotikmanager.persistence.AuditLogRepository;
@@ -17,9 +20,11 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class DeviceServiceTest {
@@ -56,6 +61,18 @@ class DeviceServiceTest {
     }
 
     @Test
+    void permitsDeviceRouterMutationsInMockModeWhenWritesAreDisabled() {
+        service.setSpeed("AA:BB:CC:DD:EE:01", new SpeedLimit(80_000_000L, 15_000_000L));
+        service.block("AA:BB:CC:DD:EE:01");
+        service.unblock("AA:BB:CC:DD:EE:01");
+
+        assertThat(gateway.findDevice("AA:BB:CC:DD:EE:01")).get().satisfies(device -> {
+            assertThat(device.speedLimit()).isEqualTo(new SpeedLimit(80_000_000L, 15_000_000L));
+            assertThat(device.blocked()).isFalse();
+        });
+    }
+
+    @Test
     void auditsMetadataChangesWithoutRecordingMetadataContents() {
         service.updateMetadata("AA:BB:CC:DD:EE:01", "Notebook", "anotação privada");
 
@@ -64,7 +81,27 @@ class DeviceServiceTest {
     }
 
     @Test
-    void rejectsAllDeviceMutationsBeforeCallingGatewayWhenRealWritesAreDisabled() {
+    void permitsLocalMetadataUpdatesWhenRealRouterWritesAreDisabled() {
+        MikrotikGateway readOnlyGateway = mock(MikrotikGateway.class);
+        ManagedDeviceRepository deviceRepository = mock(ManagedDeviceRepository.class);
+        ManagedPortRepository portRepository = mock(ManagedPortRepository.class);
+        AuditLogRepository auditRepository = mock(AuditLogRepository.class);
+        RouterDevice routerDevice = routerDevice("AA:BB:CC:DD:EE:01");
+        when(readOnlyGateway.findDevice("AA:BB:CC:DD:EE:01")).thenReturn(Optional.of(routerDevice));
+        when(deviceRepository.findByMacAddress("AA:BB:CC:DD:EE:01")).thenReturn(Optional.empty());
+        when(portRepository.findByInterfaceName("ether2")).thenReturn(Optional.of(port("ether2", 100_000_000L, 20_000_000L)));
+        DeviceService readOnlyService = new DeviceService(readOnlyGateway, deviceRepository, portRepository,
+                new OperationLockManager(), new AuditService(auditRepository), writeGuard(false, false));
+
+        readOnlyService.updateMetadata("AA:BB:CC:DD:EE:01", "Notebook", "anotação local");
+
+        verify(deviceRepository).save("AA:BB:CC:DD:EE:01", "Notebook", "anotação local");
+        verify(readOnlyGateway, times(2)).findDevice("AA:BB:CC:DD:EE:01");
+        verifyNoMoreInteractions(readOnlyGateway);
+    }
+
+    @Test
+    void rejectsDeviceRouterMutationsBeforeCallingGatewayWhenRealWritesAreDisabled() {
         MikrotikGateway readOnlyGateway = mock(MikrotikGateway.class);
         ManagedDeviceRepository deviceRepository = mock(ManagedDeviceRepository.class);
         ManagedPortRepository portRepository = mock(ManagedPortRepository.class);
@@ -72,9 +109,6 @@ class DeviceServiceTest {
         DeviceService readOnlyService = new DeviceService(readOnlyGateway, deviceRepository, portRepository,
                 new OperationLockManager(), new AuditService(auditRepository), writeGuard(false, false));
 
-        assertThatThrownBy(() -> readOnlyService.updateMetadata("AA:BB:CC:DD:EE:01", "Notebook", ""))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("escrita");
         assertThatThrownBy(() -> readOnlyService.setSpeed("AA:BB:CC:DD:EE:01", SpeedLimit.UNLIMITED))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("escrita");
@@ -96,5 +130,10 @@ class DeviceServiceTest {
     private ManagedPort port(String interfaceName, long download, long upload) {
         Instant now = Instant.now();
         return new ManagedPort(1, interfaceName, "Cliente", "", "10.10.10.0/24", "dhcp", true, now, now);
+    }
+
+    private RouterDevice routerDevice(String macAddress) {
+        return new RouterDevice("*A1", macAddress, "Notebook", "10.10.10.21", "dhcp", "ether2",
+                DeviceStatus.ONLINE, false, "", SpeedLimit.UNLIMITED, TrafficRate.UNAVAILABLE, Instant.now());
     }
 }

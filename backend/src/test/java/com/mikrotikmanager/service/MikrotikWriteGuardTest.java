@@ -9,26 +9,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MikrotikWriteGuardTest {
     @Test
-    void permitsMockMutationsWhenWriteSwitchIsDisabled() {
+    void permitsMockRouterMutationsWhenWriteSwitchIsDisabled() {
         MikrotikWriteGuard guard = guard(true, false);
 
-        assertThatCode(guard::checkWriteAllowed).doesNotThrowAnyException();
+        assertThatCode(guard::checkRouterWriteAllowed).doesNotThrowAnyException();
     }
 
     @Test
-    void rejectsRealMutationsWhenWriteSwitchIsDisabled() {
+    void rejectsRealRouterMutationsWhenWriteSwitchIsDisabled() {
         MikrotikWriteGuard guard = guard(false, false);
 
-        assertThatThrownBy(guard::checkWriteAllowed)
+        assertThatThrownBy(guard::checkRouterWriteAllowed)
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("escrita");
     }
 
     @Test
-    void permitsRealMutationsOnlyWhenWriteSwitchIsEnabled() {
+    void permitsRealRouterMutationsOnlyWhenWriteSwitchIsEnabled() {
         MikrotikWriteGuard guard = guard(false, true);
 
-        assertThatCode(guard::checkWriteAllowed).doesNotThrowAnyException();
+        assertThatCode(guard::checkRouterWriteAllowed).doesNotThrowAnyException();
     }
 
     private MikrotikWriteGuard guard(boolean mockMode, boolean writeEnabled) {

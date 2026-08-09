@@ -69,7 +69,6 @@ public class DeviceService {
 
     public DeviceView updateMetadata(String macAddress, String friendlyName, String notes) {
         String normalized = normalize(macAddress);
-        writeGuard.checkWriteAllowed();
         return lockManager.withLock("device:" + normalized, () -> {
             getDevice(normalized);
             try {
@@ -88,7 +87,7 @@ public class DeviceService {
     public DeviceView setSpeed(String macAddress, SpeedLimit requestedLimit) {
         validateSpeed(requestedLimit);
         String normalized = normalize(macAddress);
-        writeGuard.checkWriteAllowed();
+        writeGuard.checkRouterWriteAllowed();
         return lockManager.withLock("device:" + normalized, () -> {
             DeviceView device = getDevice(normalized);
             validateAgainstPort(device.routerDevice(), requestedLimit);
@@ -117,7 +116,7 @@ public class DeviceService {
 
     private DeviceView changeBlockState(String macAddress, boolean block) {
         String normalized = normalize(macAddress);
-        writeGuard.checkWriteAllowed();
+        writeGuard.checkRouterWriteAllowed();
         return lockManager.withLock("device:" + normalized, () -> {
             DeviceView device = getDevice(normalized);
             boolean previous = device.routerDevice().blocked();

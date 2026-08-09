@@ -57,10 +57,10 @@ As redes de `managed_port` são CIDRs de IP literal: hostnames como `router.loca
 `MIKROTIK_WRITE_ENABLED=false` é o kill switch padrão. A decisão é centralizada no `MikrotikWriteGuard`:
 
 - em mock mode, mutações são permitidas somente no estado simulado, para que a UI possa ser desenvolvida e testada;
-- em modo real futuro, `MIKROTIK_WRITE_ENABLED=false` recusa qualquer endpoint mutável antes de chegar ao gateway;
+- em modo real futuro, `MIKROTIK_WRITE_ENABLED=false` recusa somente mutações que alterariam o RouterOS antes de chegar ao gateway;
 - em modo real futuro, escrita somente poderá ser considerada quando a variável for habilitada explicitamente e houver um adaptador real revisado.
 
-Mutações concluídas e falhas que ocorram durante uma tentativa são gravadas em `audit_log`, sem credenciais ou headers. Falhas de validação, regras de domínio e recusas do guard acontecem antes da tentativa e não são auditadas. Isso evita registrar uma operação que não chegou a ser tentada e mantém a política consistente.
+Nomes amigáveis, observações e configurações de `managed_port` pertencem ao SQLite local e permanecem editáveis em modo real somente leitura; o guard não é aplicado a essas operações. Mutações concluídas e falhas que ocorram durante uma tentativa são gravadas em `audit_log`, sem credenciais ou headers. Falhas de validação, regras de domínio e recusas do guard de escrita RouterOS acontecem antes da tentativa e não são auditadas. Isso evita registrar uma operação que não chegou a ser tentada e mantém a política consistente.
 
 O serviço verifica download e upload separadamente: o limite individual deve ser menor ou igual ao da porta e uma redução de porta é recusada se algum dispositivo ficaria acima do novo limite. O valor `0` significa sem limite; portanto, uma porta ilimitada não invalida um limite individual.
 
@@ -105,7 +105,7 @@ FastTrack será detectado em diagnóstico, nunca desabilitado automaticamente. A
 - `MIKROTIK_PASSWORD` é lida apenas pelo backend; não existe no código do frontend nem no SQLite.
 - `MikrotikProperties.toString()` não revela a senha, reduzindo o risco de exposição acidental em logs futuros.
 - `MIKROTIK_VERIFY_SSL=true` é o padrão. A opção `false` será tratada somente no cliente HTTP dedicado ao RouterOS da Fase 2 e só deve ser usada conscientemente em desenvolvimento controlado com certificado self-signed ainda não confiável. Nenhuma validação TLS global será desabilitada.
-- `MIKROTIK_WRITE_ENABLED=false` é o padrão para escrita real; mock mode permanece mutável apenas em memória.
+- `MIKROTIK_WRITE_ENABLED=false` é o padrão para escrita no RouterOS; mock mode permanece mutável apenas em memória, enquanto configurações locais do SQLite continuam editáveis em modo real somente leitura.
 - CORS permite somente a origem local configurada.
 - Logs usam identificadores operacionais (MAC/porta), nunca senha, header Authorization ou cookie.
 - `OperationLockManager` serializa alterações concorrentes por MAC ou interface no processo local.

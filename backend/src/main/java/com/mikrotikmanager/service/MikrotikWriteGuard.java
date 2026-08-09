@@ -7,8 +7,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 /**
- * Central safety switch for all RouterOS mutations. Mock mode remains writable
- * so local development can exercise the UI without a physical router.
+ * Central safety switch for RouterOS mutations only. Local SQLite state is not
+ * guarded; mock mode remains writable so local development can exercise the UI
+ * without a physical router.
  */
 @Component
 public class MikrotikWriteGuard {
@@ -18,7 +19,10 @@ public class MikrotikWriteGuard {
         this.properties = properties;
     }
 
-    public void checkWriteAllowed() {
+    /**
+     * Must be called immediately before a gateway operation that mutates RouterOS.
+     */
+    public void checkRouterWriteAllowed() {
         if (properties.mockMode() || properties.writeEnabled()) {
             return;
         }

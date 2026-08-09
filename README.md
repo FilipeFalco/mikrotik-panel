@@ -57,13 +57,13 @@ Abra [http://localhost:3000](http://localhost:3000). O backend atende somente em
 
 O modo mock vem ativado por padrão e inclui `ether1` a `ether5`, três clientes configurados e 12 dispositivos com combinações de online, offline, bloqueado, com limite e sem limite. Bloquear, liberar e editar limites atualiza apenas o estado em memória desta execução e gera auditoria no SQLite.
 
-`MIKROTIK_WRITE_ENABLED=false` também é o padrão. Em mock mode, as mutações simuladas continuam permitidas deliberadamente, mesmo com esse valor: isso mantém os fluxos da UI exercitáveis sem um roteador físico. Em modo real futuro (`MIKROTIK_MOCK_MODE=false`), `MIKROTIK_WRITE_ENABLED=false` bloqueia todo endpoint mutável antes de qualquer chamada ao gateway.
+`MIKROTIK_WRITE_ENABLED=false` também é o padrão. Em mock mode, as mutações simuladas continuam permitidas deliberadamente, mesmo com esse valor: isso mantém os fluxos da UI exercitáveis sem um roteador físico. Em modo real futuro (`MIKROTIK_MOCK_MODE=false`), ele bloqueia apenas operações que alterariam o RouterOS antes de qualquer chamada de escrita ao gateway. Configurações locais persistidas no SQLite, como nomes amigáveis, observações e associações de portas, continuam editáveis.
 
 Para zerar os nomes e histórico locais durante desenvolvimento, pare o backend e remova manualmente o arquivo `data/mikrotik-manager.db`. Ele é recriado na próxima execução em mock mode.
 
 ## Executar com MikroTik real
 
-A integração real **não está ativa na Fase 1**: não existe `RouterOsRestGateway` funcional e o backend não faz chamadas a `/rest`. Definir `MIKROTIK_MOCK_MODE=false` é seguro: o backend usa o gateway indisponível, informa o estado desconectado e não tenta acessar nem modificar o equipamento. Com `MIKROTIK_WRITE_ENABLED=false`, todos os endpoints mutáveis também são recusados antes do gateway.
+A integração real **não está ativa na Fase 1**: não existe `RouterOsRestGateway` funcional e o backend não faz chamadas a `/rest`. Definir `MIKROTIK_MOCK_MODE=false` é seguro: o backend usa o gateway indisponível, informa o estado desconectado e não tenta acessar nem modificar o equipamento. Com `MIKROTIK_WRITE_ENABLED=false`, somente operações que alterariam o RouterOS são recusadas antes do gateway; configurações locais do SQLite permanecem editáveis quando os dados de leitura estiverem disponíveis.
 
 Prepare o RouterOS e as variáveis para a próxima fase seguindo [docs/routeros-setup.md](docs/routeros-setup.md). Em especial:
 
@@ -84,7 +84,7 @@ O backend usa variáveis de ambiente; `.env` é apenas uma conveniência para se
 | `MIKROTIK_PASSWORD` | vazio | Segredo somente do backend; não entra no SQLite. |
 | `MIKROTIK_VERIFY_SSL` | `true` | Validar certificado do RouterOS. Só use `false` conscientemente em desenvolvimento controlado com certificado self-signed ainda não confiável. |
 | `MIKROTIK_MOCK_MODE` | `true` | Usa dados simulados e não acessa o roteador. |
-| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch para escrita real. Mock mode continua permitindo apenas mutações simuladas; modo real com `false` recusa endpoints mutáveis antes do gateway. |
+| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch para escrita no RouterOS. Mock mode continua permitindo mutações simuladas; modo real com `false` recusa apenas mutações RouterOS antes do gateway, mantendo configurações locais no SQLite editáveis. |
 | `SERVER_ADDRESS` | `127.0.0.1` | Endereço de escuta do backend. |
 | `SERVER_PORT` | `8080` | Porta do backend. |
 | `APP_FRONTEND_ORIGIN` | `http://localhost:3000` | Única origem CORS permitida. |
