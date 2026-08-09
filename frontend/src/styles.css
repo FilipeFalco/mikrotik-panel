@@ -82,6 +82,7 @@ textarea { resize: vertical; }
 .input-with-unit { position: relative; }
 .input-with-unit input { padding-right: 60px; }
 .input-with-unit span { position: absolute; right: 11px; top: 9px; color: #8094aa; font-size: 12px; pointer-events: none; }
+.field-error { color: #fda4af; font-weight: 600; line-height: 1.3; }
 
 .device-section { display: grid; gap: 15px; }
 .device-controls { display: flex; gap: 12px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
@@ -145,6 +146,10 @@ textarea { resize: vertical; }
 .settings-port-list { display: grid; gap: 1px; }.settings-port-list > div { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 14px 0; border-top: 1px solid #24364e; }.settings-port-list strong, .settings-port-list small { display: block; }.settings-port-list strong { color: #e5eff9; }.settings-port-list small { margin-top: 4px; color: #91a4ba; font-size: 12px; }
 .loading-state { min-height: 55vh; display: grid; place-content: center; justify-items: center; gap: 13px; color: #9eb1c4; }
 .loading-spinner { width: 30px; height: 30px; border: 3px solid #264054; border-top-color: #5eead4; border-radius: 50%; animation: spin .85s linear infinite; }
+.offline-state { max-width: 620px; padding: 30px; border: 1px solid #36506c; border-radius: 14px; background: rgba(13, 27, 45, .82); box-shadow: 0 14px 38px rgba(0, 0, 0, .12); }
+.offline-state h1 { margin: 5px 0 10px; color: #f4f7fb; letter-spacing: -.03em; font-size: clamp(28px, 3vw, 36px); }
+.offline-state p:not(.eyebrow) { color: #aebfd0; margin: 7px 0; }
+.offline-state .button { margin-top: 14px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

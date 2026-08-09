@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { bpsToMbps, formatRate, mbpsToBps } from '../format';
+import { bpsToMbps, formatRate, parseMbps } from '../format';
 import type { Device } from '../types';
 import { StatusBadge } from './StatusBadge';
 
@@ -16,6 +16,7 @@ export function DeviceDetails({ device, busy, onClose, onSave, onRequestBlock }:
   const [notes, setNotes] = useState('');
   const [download, setDownload] = useState('');
   const [upload, setUpload] = useState('');
+  const [errors, setErrors] = useState<{ download?: string; upload?: string }>({});
 
   useEffect(() => {
     if (!device) return;
@@ -23,13 +24,21 @@ export function DeviceDetails({ device, busy, onClose, onSave, onRequestBlock }:
     setNotes(device.notes ?? '');
     setDownload(bpsToMbps(device.downloadLimitBps));
     setUpload(bpsToMbps(device.uploadLimitBps));
+    setErrors({});
   }, [device]);
 
   if (!device) return null;
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    onSave(device, friendlyName, notes, mbpsToBps(download), mbpsToBps(upload));
+    const parsedDownload = parseMbps(download);
+    const parsedUpload = parseMbps(upload);
+    setErrors({
+      download: parsedDownload.valid ? undefined : parsedDownload.error,
+      upload: parsedUpload.valid ? undefined : parsedUpload.error,
+    });
+    if (!parsedDownload.valid || !parsedUpload.valid) return;
+    onSave(device, friendlyName, notes, parsedDownload.bps, parsedUpload.bps);
   };
 
   return (
@@ -48,8 +57,8 @@ export function DeviceDetails({ device, busy, onClose, onSave, onRequestBlock }:
           <label>Nome amigável<input value={friendlyName} onChange={(event) => setFriendlyName(event.target.value)} placeholder={device.hostname ?? device.macAddress} /></label>
           <label>Observações<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} /></label>
           <div className="two-columns">
-            <label>Limite download<div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => setDownload(event.target.value)} /><span>Mbps</span></div></label>
-            <label>Limite upload<div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => setUpload(event.target.value)} /><span>Mbps</span></div></label>
+            <label>Limite download<div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'device-download-error' : undefined} /><span>Mbps</span></div>{errors.download && <small id="device-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
+            <label>Limite upload<div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'device-upload-error' : undefined} /><span>Mbps</span></div>{errors.upload && <small id="device-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
           </div>
           <div className="dialog-actions split-actions">
             <button type="button" className={device.blocked ? 'button secondary' : 'button danger'} onClick={() => onRequestBlock(device)} disabled={busy}>

@@ -24,6 +24,35 @@ const navItems: Array<{ id: Exclude<View, 'port'>; label: string; symbol: string
   { id: 'settings', label: 'Configurações', symbol: '⚙' },
 ];
 
+const STATUS_POLL_INTERVAL_MS = 5_000;
+const ROUTER_DATA_POLL_INTERVAL_MS = 5_000;
+
+function errorMessage(reason: unknown, fallback: string): string {
+  return reason instanceof ApiError ? reason.message : fallback;
+}
+
+interface OfflineStateProps {
+  systemStatus: SystemStatus | null;
+  retrying: boolean;
+  onRetry: () => void;
+}
+
+function OfflineState({ systemStatus, retrying, onRetry }: OfflineStateProps) {
+  const host = systemStatus ? `${systemStatus.host}:${systemStatus.port}` : 'Host indisponível';
+
+  return (
+    <section className="offline-state" role="status">
+      <p className="eyebrow">Status de conexão</p>
+      <h1>MikroTik desconectado</h1>
+      <p>Host: <strong>{host}</strong></p>
+      <p>Não foi possível obter os dados do RouterOS.</p>
+      <button type="button" className="button primary" onClick={onRetry} disabled={retrying}>
+        {retrying ? 'Tentando…' : 'Tentar novamente'}
+      </button>
+    </section>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [ports, setPorts] = useState<Port[]>([]);
@@ -39,30 +68,80 @@ export default function App() {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async (initial = false) => {
+  const refreshSystemStatus = useCallback(async (initial = false): Promise<SystemStatus | null> => {
     if (initial) setLoading(true);
     try {
-      const [nextStatus, nextPorts, nextDevices, nextAudit, nextDiagnostics] = await Promise.all([
-        api.systemStatus(), api.ports(), api.devices(), api.audit(), api.diagnostics(),
-      ]);
+      const nextStatus = await api.systemStatus();
       setSystemStatus(nextStatus);
-      setPorts(nextPorts);
-      setDevices(nextDevices);
-      setAudit(nextAudit);
-      setDiagnostics(nextDiagnostics);
       setError(null);
+      return nextStatus;
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Não foi possível carregar os dados do painel.');
+      setSystemStatus(null);
+      setError(errorMessage(reason, 'Não foi possível obter o status de conexão do MikroTik.'));
+      return null;
     } finally {
       if (initial) setLoading(false);
     }
   }, []);
 
+  const refreshRouterData = useCallback(async () => {
+    const [nextPorts, nextDevices] = await Promise.allSettled([api.ports(), api.devices()]);
+
+    if (nextPorts.status === 'fulfilled') setPorts(nextPorts.value);
+    if (nextDevices.status === 'fulfilled') setDevices(nextDevices.value);
+
+    if (nextPorts.status === 'rejected') {
+      setError(errorMessage(nextPorts.reason, 'Não foi possível obter os dados do RouterOS.'));
+    } else if (nextDevices.status === 'rejected') {
+      setError(errorMessage(nextDevices.reason, 'Não foi possível obter os dados do RouterOS.'));
+    } else {
+      setError(null);
+    }
+  }, []);
+
+  const refreshAudit = useCallback(async () => {
+    try {
+      setAudit(await api.audit());
+      setError(null);
+    } catch (reason) {
+      setError(errorMessage(reason, 'Não foi possível carregar o histórico de auditoria.'));
+    }
+  }, []);
+
+  const refreshDiagnostics = useCallback(async () => {
+    try {
+      setDiagnostics(await api.diagnostics());
+      setError(null);
+    } catch (reason) {
+      setError(errorMessage(reason, 'Não foi possível carregar os diagnósticos.'));
+    }
+  }, []);
+
   useEffect(() => {
-    void refresh(true);
-    const timer = window.setInterval(() => void refresh(), 5_000);
+    void refreshSystemStatus(true);
+    const timer = window.setInterval(() => void refreshSystemStatus(), STATUS_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refreshSystemStatus]);
+
+  useEffect(() => {
+    if (!systemStatus?.connected) {
+      setPorts([]);
+      setDevices([]);
+      return undefined;
+    }
+
+    void refreshRouterData();
+    const timer = window.setInterval(() => void refreshRouterData(), ROUTER_DATA_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [systemStatus?.connected, refreshRouterData]);
+
+  useEffect(() => {
+    if (view === 'history') void refreshAudit();
+  }, [view, refreshAudit]);
+
+  useEffect(() => {
+    if (view === 'settings') void refreshDiagnostics();
+  }, [view, refreshDiagnostics]);
 
   const selectedPort = useMemo(() => ports.find((port) => port.interfaceName === selectedPortName) ?? null, [ports, selectedPortName]);
 
@@ -76,15 +155,23 @@ export default function App() {
     setView(nextView);
   };
 
+  const retryConnection = () => {
+    setTesting(true);
+    setError(null);
+    void refreshSystemStatus()
+      .then((status) => status?.connected ? refreshRouterData() : undefined)
+      .finally(() => setTesting(false));
+  };
+
   const runOperation = async (operation: () => Promise<unknown>, after?: () => void) => {
     setBusy(true);
     setError(null);
     try {
       await operation();
-      await refresh();
+      await Promise.all([refreshRouterData(), refreshAudit()]);
       after?.();
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'A operação não pôde ser concluída.');
+      setError(errorMessage(reason, 'A operação não pôde ser concluída.'));
     } finally {
       setBusy(false);
     }
@@ -121,16 +208,18 @@ export default function App() {
     setTesting(true);
     setError(null);
     void api.testConnection()
-      .then((status) => {
+      .then(async (status) => {
         setSystemStatus(status);
-        return refresh();
+        await refreshDiagnostics();
+        if (status.connected) await refreshRouterData();
       })
-      .catch((reason: unknown) => setError(reason instanceof ApiError ? reason.message : 'Não foi possível testar a conexão.'))
+      .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível testar a conexão.')))
       .finally(() => setTesting(false));
   };
 
   const content = () => {
     if (loading) return <div className="loading-state"><span className="loading-spinner" /><p>Carregando o painel local…</p></div>;
+    if (!systemStatus?.connected && (view === 'dashboard' || view === 'devices' || view === 'port')) return <OfflineState systemStatus={systemStatus} retrying={testing} onRetry={retryConnection} />;
     if (view === 'dashboard') return <Dashboard ports={ports} onManage={openPort} />;
     if (view === 'devices') return <div className="page-stack"><section className="page-heading"><div><p className="eyebrow">Todos os clientes</p><h1>Dispositivos</h1><p>Pesquise por nome, IP ou MAC e gerencie cada dispositivo.</p></div></section><DeviceList devices={devices} onSelect={setSelectedDevice} /></div>;
     if (view === 'history') return <History entries={audit} />;
@@ -147,8 +236,8 @@ export default function App() {
         <div className="sidebar-foot"><span>Local only</span><small>v0.1 · Fase 1</small></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{systemStatus?.mockMode ? 'Dados simulados' : 'RouterOS'}</small></div>{systemStatus && <StatusBadge status={systemStatus.connected ? 'CONNECTED' : 'DISCONNECTED'} />}</header>
-        {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={() => void refresh()}>Tentar novamente</button></section>}
+        <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{systemStatus?.mockMode ? 'Dados simulados' : 'RouterOS'}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
+        {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>

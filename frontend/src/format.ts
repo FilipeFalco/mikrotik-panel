@@ -22,9 +22,32 @@ export function bpsToMbps(bps: number): string {
   return bps ? String(bps / 1_000_000) : '';
 }
 
-export function mbpsToBps(value: string): number {
-  const parsed = Number(value.replace(',', '.'));
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 1_000_000) : 0;
+export type MbpsParseResult =
+  | { valid: true; bps: number }
+  | { valid: false; error: string };
+
+export function parseMbps(value: string): MbpsParseResult {
+  const normalized = value.trim();
+
+  // An empty field explicitly means "no limit". Any non-empty value must be a
+  // decimal number so a typo can never silently become an unlimited limit.
+  if (!normalized) return { valid: true, bps: 0 };
+  if (!/^\d+(?:[,.]\d+)?$/.test(normalized)) {
+    return { valid: false, error: 'Informe um valor em Mbps válido.' };
+  }
+
+  const mbps = Number(normalized.replace(',', '.'));
+  const bps = Math.round(mbps * 1_000_000);
+  if (!Number.isSafeInteger(bps)) {
+    return { valid: false, error: 'Informe um valor em Mbps válido.' };
+  }
+
+  return { valid: true, bps };
+}
+
+export function mbpsToBps(value: string): number | null {
+  const parsed = parseMbps(value);
+  return parsed.valid ? parsed.bps : null;
 }
 
 export function statusLabel(status: DeviceStatus): string {
