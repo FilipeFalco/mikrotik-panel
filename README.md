@@ -8,7 +8,7 @@ Gerenciador web local para visualizar portas/clientes, dispositivos DHCP, bloque
 
 - Java 21 LTS (ou JDK mais novo que suporte compilação com `--release 21`);
 - Node.js 20+ LTS e npm;
-- Maven (o projeto inclui um lançador `mvnw` simples);
+- não é necessário instalar Maven globalmente: o Maven Wrapper oficial está em `backend/`;
 - RouterOS 7 somente quando a Fase 2 for utilizada.
 
 Docker não é necessário.
@@ -17,12 +17,14 @@ Docker não é necessário.
 
 ```text
 .
-├── backend/       Spring Boot, SQLite, Flyway e gateway RouterOS/mock
+├── backend/       Spring Boot, SQLite, Flyway, gateway e Maven Wrapper oficial
+│   ├── mvnw       Wrapper para Linux/macOS
+│   ├── mvnw.cmd   Wrapper para Windows
+│   └── .mvn/      Configuração do Maven Wrapper
 ├── frontend/      React, TypeScript e Vite
 ├── data/          Banco SQLite local (ignorado pelo Git)
 ├── docs/          Arquitetura e preparação manual do RouterOS
-├── .env.example   Modelo de variáveis locais
-└── mvnw           Lançador Maven local
+└── .env.example   Modelo de variáveis locais
 ```
 
 ## Executar em mock mode
@@ -47,7 +49,7 @@ Terminal 2 — frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -55,11 +57,13 @@ Abra [http://localhost:3000](http://localhost:3000). O backend atende somente em
 
 O modo mock vem ativado por padrão e inclui `ether1` a `ether5`, três clientes configurados e 12 dispositivos com combinações de online, offline, bloqueado, com limite e sem limite. Bloquear, liberar e editar limites atualiza apenas o estado em memória desta execução e gera auditoria no SQLite.
 
+`MIKROTIK_WRITE_ENABLED=false` também é o padrão. Em mock mode, as mutações simuladas continuam permitidas deliberadamente, mesmo com esse valor: isso mantém os fluxos da UI exercitáveis sem um roteador físico. Em modo real futuro (`MIKROTIK_MOCK_MODE=false`), `MIKROTIK_WRITE_ENABLED=false` bloqueia todo endpoint mutável antes de qualquer chamada ao gateway.
+
 Para zerar os nomes e histórico locais durante desenvolvimento, pare o backend e remova manualmente o arquivo `data/mikrotik-manager.db`. Ele é recriado na próxima execução em mock mode.
 
 ## Executar com MikroTik real
 
-A integração real **não está ativa na Fase 1**. Definir `MIKROTIK_MOCK_MODE=false` é seguro: o backend informa que o adaptador REST ainda não foi disponibilizado e não tenta modificar o equipamento.
+A integração real **não está ativa na Fase 1**: não existe `RouterOsRestGateway` funcional e o backend não faz chamadas a `/rest`. Definir `MIKROTIK_MOCK_MODE=false` é seguro: o backend usa o gateway indisponível, informa o estado desconectado e não tenta acessar nem modificar o equipamento. Com `MIKROTIK_WRITE_ENABLED=false`, todos os endpoints mutáveis também são recusados antes do gateway.
 
 Prepare o RouterOS e as variáveis para a próxima fase seguindo [docs/routeros-setup.md](docs/routeros-setup.md). Em especial:
 
@@ -78,8 +82,9 @@ O backend usa variáveis de ambiente; `.env` é apenas uma conveniência para se
 | `MIKROTIK_PORT` | `443` | Porta de `www-ssl`. |
 | `MIKROTIK_USERNAME` | vazio | Usuário exclusivo da aplicação. |
 | `MIKROTIK_PASSWORD` | vazio | Segredo somente do backend; não entra no SQLite. |
-| `MIKROTIK_VERIFY_SSL` | `true` | Validar certificado do RouterOS. Deixe `false` apenas para desenvolvimento com certificado self-signed. |
+| `MIKROTIK_VERIFY_SSL` | `true` | Validar certificado do RouterOS. Só use `false` conscientemente em desenvolvimento controlado com certificado self-signed ainda não confiável. |
 | `MIKROTIK_MOCK_MODE` | `true` | Usa dados simulados e não acessa o roteador. |
+| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch para escrita real. Mock mode continua permitindo apenas mutações simuladas; modo real com `false` recusa endpoints mutáveis antes do gateway. |
 | `SERVER_ADDRESS` | `127.0.0.1` | Endereço de escuta do backend. |
 | `SERVER_PORT` | `8080` | Porta do backend. |
 | `APP_FRONTEND_ORIGIN` | `http://localhost:3000` | Única origem CORS permitida. |
@@ -92,16 +97,23 @@ Backend:
 ```bash
 cd backend
 ./mvnw test
+./mvnw package
 ```
+
+No Windows, execute `mvnw.cmd test` e `mvnw.cmd package` dentro de `backend/`.
 
 Frontend:
 
 ```bash
 cd frontend
+npm ci
 npm test
+npm run build
 ```
 
-Os testes do backend cobrem mock mode, idempotência de bloqueio, identificadores gerenciados, validação de CIDR e regra de limite individual menor ou igual ao limite da porta. Os testes do frontend cobrem cartões de portas, filtros de dispositivos e confirmação de bloqueio.
+`npm ci` é a instalação reprodutível usada para testar e construir o frontend; use `npm install` somente quando for atualizar dependências e, então, revise e versione o `package-lock.json` resultante.
+
+Os testes do backend cobrem mock mode, idempotência de bloqueio, identificadores gerenciados, validação/normalização de CIDR, regras de limite entre porta e dispositivo, kill switch de escrita, consultas agregadas ao gateway e a integração Spring + SQLite + Flyway. Os testes do frontend cobrem dashboard, filtros de dispositivos, confirmação de bloqueio, estado desconectado e validação de Mbps.
 
 ## Build
 
@@ -110,14 +122,19 @@ cd backend
 ./mvnw package
 
 cd ../frontend
+npm ci
 npm run build
 ```
 
 ## Decisões técnicas relevantes
 
 - O backend usa uma API própria, DTOs e uma interface `MikrotikGateway`; o restante do código não depende de JSON cru do RouterOS.
+- O carregamento de portas lê interfaces, dispositivos e velocidades em operações agregadas e correlaciona os dados em memória, evitando N+1 quando o gateway vier a ser HTTP.
 - SQLite é fonte de verdade somente para nomes amigáveis, configurações locais de portas e auditoria. RouterOS será fonte de verdade para estado de rede.
-- Recursos futuros criados pela aplicação usarão comentários `MTMGR:PORT:*` e `MTMGR:DEVICE:*`; nada desconhecido será removido ou alterado.
+- CIDRs aceitam apenas IPs literais (sem DNS) e a rede é normalizada antes de persistir; por exemplo, `10.10.10.17/24` torna-se `10.10.10.0/24`.
+- Recursos futuros criados pela aplicação usarão comentários exatos `MTMGR:PORT:<interface>` e `MTMGR:DEVICE:<MAC-normalizado>`; um prefixo genérico `MTMGR:` nunca comprova propriedade para uma alteração ou remoção.
+- Um limite de dispositivo não pode exceder o limite da porta, e uma redução de porta é recusada se deixar algum dispositivo acima dela. Zero significa sem limite.
+- Mutações concluídas e falhas ocorridas durante uma tentativa são auditadas sem segredos. Validações de entrada/regra de domínio e o kill switch recusam a solicitação antes da tentativa e não geram auditoria.
 - A estratégia documentada para banda é fila simples pai por sub-rede e filas filhas por dispositivo, para manter o teto agregado da porta.
 - FastTrack será apenas detectado e avisado; o aplicativo não o altera automaticamente.
 
@@ -134,7 +151,7 @@ node --version
 npm --version
 ```
 
-Depois execute `npm install` dentro de `frontend/`.
+Depois execute `npm ci` dentro de `frontend/`. Use `npm install` somente para atualizar dependências e o lockfile.
 
 ### O backend não inicia ou o SQLite não abre
 
@@ -146,7 +163,7 @@ Na Fase 1 isso é esperado se `MIKROTIK_MOCK_MODE=false`, pois a integração RE
 
 ### Certificado SSL self-signed
 
-Prefira confiar na CA localmente. Em ambiente de desenvolvimento controlado, use `MIKROTIK_VERIFY_SSL=false`; essa exceção será isolada no cliente HTTP do RouterOS, nunca aplicada globalmente.
+O padrão é `MIKROTIK_VERIFY_SSL=true`. Prefira confiar na CA localmente. Somente em ambiente de desenvolvimento controlado, com certificado self-signed ainda não confiável, use `MIKROTIK_VERIFY_SSL=false`; essa exceção será isolada no futuro cliente HTTP do RouterOS, nunca aplicada globalmente.
 
 ### Dispositivo não aparece
 

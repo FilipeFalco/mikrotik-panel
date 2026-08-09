@@ -21,7 +21,7 @@ Substitua `192.168.88.10` pelo IP do computador local que roda o backend e `mtmg
 
 Não abra o serviço para `0.0.0.0/0`. A propriedade `address` de `/ip service` restringe quais endereços podem usar o serviço. [IP Services oficial](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
 
-Se usar certificado self-signed, prefira importar a CA no computador. A opção `MIKROTIK_VERIFY_SSL=false` existe apenas para desenvolvimento local e será aplicada isoladamente ao futuro cliente RouterOS.
+O padrão é `MIKROTIK_VERIFY_SSL=true`. Se usar certificado self-signed, prefira importar a CA no computador. A opção `MIKROTIK_VERIFY_SSL=false` existe somente para desenvolvimento local controlado, quando o certificado ainda não for confiável, e será aplicada isoladamente ao futuro cliente RouterOS.
 
 ## 3. Criar usuário dedicado
 
@@ -47,9 +47,12 @@ MIKROTIK_USERNAME=mtmgr
 MIKROTIK_PASSWORD=uma-senha-forte
 MIKROTIK_VERIFY_SSL=true
 MIKROTIK_MOCK_MODE=true
+MIKROTIK_WRITE_ENABLED=false
 ```
 
-Na Fase 2, mude `MIKROTIK_MOCK_MODE=false` somente para validar as chamadas de leitura. Essa fase não modificará a configuração RouterOS.
+`MIKROTIK_WRITE_ENABLED=false` é o padrão e é o kill switch para a futura integração real. O mock mode continua permitindo as mutações simuladas da UI, porque elas existem apenas em memória. Em contraste, com `MIKROTIK_MOCK_MODE=false` e `MIKROTIK_WRITE_ENABLED=false`, qualquer endpoint mutável é recusado antes do gateway.
+
+Na Fase 1, não mude `MIKROTIK_MOCK_MODE=false` para tentar integrar o equipamento: ainda não existe `RouterOsRestGateway` funcional, não há chamadas a `/rest` e o gateway indisponível não acessa a rede. Em uma futura Fase 2, essa variável será usada somente para validar chamadas de leitura; essa fase não modificará a configuração RouterOS.
 
 ## 5. DHCP e associação com portas
 
@@ -60,7 +63,7 @@ Verifique manualmente que cada DHCP server possui a interface/rede esperada:
 /ip/dhcp-server/lease/print detail
 ```
 
-Cadastre no painel o nome da interface, a rede CIDR e — quando necessário — o nome do DHCP server. O adaptador real correlacionará lease → DHCP server → interface e usará CIDR como conferência, não um nome hardcoded.
+Cadastre no painel o nome da interface, a rede CIDR e — quando necessário — o nome do DHCP server. A rede deve usar um IP literal, nunca hostname; `10.10.10.17/24` será normalizado e persistido como `10.10.10.0/24`. O adaptador real correlacionará lease → DHCP server → interface e usará CIDR como conferência, não um nome hardcoded.
 
 ## 6. FastTrack e queues (não altere ainda)
 
@@ -82,4 +85,4 @@ MTMGR:PORT:ether2
 MTMGR:DEVICE:AA-BB-CC-DD-EE-FF
 ```
 
-O aplicativo só atualizará/removerá recursos cujo comentário confirme essa propriedade. Regras, queues, NAT, bridges, rotas e leases existentes que não tenham esse identificador não serão alterados.
+O aplicativo só atualizará/removerá recursos cujo comentário confirme exatamente essa propriedade: o MAC ou a interface precisam corresponder ao valor no comentário. Um `MTMGR:` genérico, MAC de outro dispositivo ou outra porta não é suficiente. Regras, queues, NAT, bridges, rotas e leases existentes que não tenham esse identificador não serão alterados.
