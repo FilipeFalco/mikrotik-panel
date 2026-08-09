@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import App from './App';
-import type { Port, SystemStatus } from './types';
+import type { Device, Port, SystemStatus } from './types';
 
 const disconnectedStatus: SystemStatus = {
   connected: false,
@@ -62,6 +62,17 @@ const ports: Port[] = [{
   }],
 }];
 
+const bridgeDevice: Device = {
+  ...ports[0].devices[0],
+  displayName: 'Filipe-PC',
+  hostname: 'Filipe-PC',
+  ipAddress: '192.168.88.254',
+  macAddress: '3C:7C:3F:30:01:DF',
+  interfaceName: 'bridge',
+  portFriendlyName: 'bridge',
+  dhcpServer: 'defconf',
+};
+
 function jsonResponse(body: unknown): Response {
   return { ok: true, json: async () => body } as Response;
 }
@@ -88,10 +99,11 @@ it('keeps the disconnected status visible when RouterOS data is unavailable', as
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-it('shows real RouterOS version and read-only state while deriving global devices from ports', async () => {
+it('shows global devices discovered through a bridge, even though the dashboard lists physical ports', async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     if (String(input) === '/api/system/status') return jsonResponse(connectedReadOnlyStatus);
     if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse([bridgeDevice]);
     throw new Error(`Unexpected request: ${String(input)}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -103,8 +115,8 @@ it('shows real RouterOS version and read-only state while deriving global device
   await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/ports')).toHaveLength(1));
 
   fireEvent.click(screen.getByRole('button', { name: 'Dispositivos' }));
-  expect(await screen.findByText('Galaxy S25')).toBeInTheDocument();
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(0);
+  expect(await screen.findByText('Filipe-PC')).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(1);
 });
 
 it('recovers from offline to online and starts loading router data from ports', async () => {
@@ -115,6 +127,7 @@ it('recovers from offline to online and starts loading router data from ports', 
       return jsonResponse(statusRequestCount === 1 ? disconnectedStatus : connectedReadOnlyStatus);
     }
     if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
     throw new Error(`Unexpected request: ${String(input)}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -127,7 +140,7 @@ it('recovers from offline to online and starts loading router data from ports', 
   expect(await screen.findByText('RouterOS 7.16.2 · Somente leitura')).toBeInTheDocument();
   await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/ports')).toHaveLength(1));
   expect(screen.queryByRole('heading', { name: 'MikroTik desconectado' })).not.toBeInTheDocument();
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(0);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(1);
 });
 
 it('saves a discovered interface locally and refreshes the dashboard without a browser reload', async () => {
@@ -147,6 +160,7 @@ it('saves a discovered interface locally and refreshes the dashboard without a b
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === '/api/system/status') return jsonResponse(connectedReadOnlyStatus);
     if (String(input) === '/api/ports') return jsonResponse(currentPorts);
+    if (String(input) === '/api/devices') return jsonResponse([]);
     if (String(input) === '/api/diagnostics') {
       return jsonResponse({ connected: true, routerOsVersion: '7.16.2', latencyMillis: 12, mockMode: false, fastTrackDetected: false, checks: [] });
     }
@@ -200,5 +214,5 @@ it('saves a discovered interface locally and refreshes the dashboard without a b
 
   fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
   expect(await screen.findByText('Cliente João')).toBeInTheDocument();
-  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(0);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).not.toHaveLength(0);
 });

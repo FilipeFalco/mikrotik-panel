@@ -69,9 +69,9 @@ export default function App() {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const applyRouterData = useCallback((nextPorts: Port[]) => {
+  const applyRouterData = useCallback((nextPorts: Port[], nextDevices: Device[]) => {
     setPorts(nextPorts);
-    setDevices(nextPorts.flatMap((port) => port.devices));
+    setDevices(nextDevices);
   }, []);
 
   const refreshSystemStatus = useCallback(async (initial = false): Promise<SystemStatus | null> => {
@@ -92,8 +92,8 @@ export default function App() {
 
   const refreshRouterData = useCallback(async () => {
     try {
-      const nextPorts = await api.ports();
-      applyRouterData(nextPorts);
+      const [nextPorts, nextDevices] = await Promise.all([api.ports(), api.devices()]);
+      applyRouterData(nextPorts, nextDevices);
       setError(null);
     } catch (reason) {
       setError(errorMessage(reason, 'Não foi possível obter os dados do RouterOS.'));

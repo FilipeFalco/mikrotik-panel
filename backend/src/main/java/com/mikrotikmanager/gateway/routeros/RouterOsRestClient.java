@@ -1,5 +1,7 @@
 package com.mikrotikmanager.gateway.routeros;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.gateway.routeros.dto.RouterOsInterfaceDto;
 import com.mikrotikmanager.gateway.routeros.dto.RouterOsSystemResourceDto;
@@ -25,6 +27,7 @@ import org.springframework.web.client.RestClientResponseException;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.GeneralSecurityException;
@@ -54,6 +57,7 @@ public final class RouterOsRestClient {
     private static final String DHCP_LEASE_PATH = "/rest/ip/dhcp-server/lease";
     private static final String SIMPLE_QUEUE_PATH = "/rest/queue/simple";
     private static final String FIREWALL_FILTER_PATH = "/rest/ip/firewall/filter";
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     private final RestClient restClient;
 
@@ -89,7 +93,11 @@ public final class RouterOsRestClient {
     }
 
     public List<RouterOsSystemResourceDto> getSystemResources() {
-        return getCollection(SYSTEM_RESOURCE_PATH, RouterOsSystemResourceDto.class);
+        JsonNode response = execute(() -> restClient.get()
+                .uri(SYSTEM_RESOURCE_PATH)
+                .retrieve()
+                .body(JsonNode.class));
+        return systemResources(response);
     }
 
     public List<RouterOsInterfaceDto> getInterfaces() {
@@ -126,6 +134,34 @@ public final class RouterOsRestClient {
                 .retrieve()
                 .body(responseType));
         return response == null ? List.of() : List.copyOf(response);
+    }
+
+    /**
+     * RouterOS has returned both an array and a single object for the singleton
+     * {@code /system/resource} endpoint across releases. Normalize both wire
+     * shapes so the gateway can retain its collection-oriented contract.
+     */
+    private static List<RouterOsSystemResourceDto> systemResources(JsonNode response) {
+        if (response == null || response.isNull()) {
+            return List.of();
+        }
+        try {
+            if (response.isObject()) {
+                return List.of(JSON_MAPPER.treeToValue(response, RouterOsSystemResourceDto.class));
+            }
+            if (response.isArray()) {
+                return List.copyOf(JSON_MAPPER.readerForListOf(RouterOsSystemResourceDto.class).readValue(response));
+            }
+        } catch (IOException exception) {
+            throw new RouterOsRestClientException(
+                    RouterOsRestErrorType.BAD_RESPONSE,
+                    "RouterOS returned an unexpected response."
+            );
+        }
+        throw new RouterOsRestClientException(
+                RouterOsRestErrorType.BAD_RESPONSE,
+                "RouterOS returned an unexpected response."
+        );
     }
 
     private static RestClient createRestClient(MikrotikProperties properties) {

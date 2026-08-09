@@ -59,6 +59,21 @@ class RouterOsRestClientTest {
     }
 
     @Test
+    void acceptsTheSingleObjectShapeReturnedByRecentRouterOsVersionsForSystemResource() {
+        TestTransport transport = testTransport();
+        transport.server().expect(requestTo("http://127.0.0.1:18080/rest/system/resource"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{\"version\":\"7.21.5 (long-term)\"}", MediaType.APPLICATION_JSON));
+
+        List<RouterOsSystemResourceDto> systemResources = transport.client().getSystemResources();
+
+        assertThat(systemResources).singleElement()
+                .extracting(RouterOsSystemResourceDto::version)
+                .isEqualTo("7.21.5 (long-term)");
+        transport.server().verify();
+    }
+
+    @Test
     void mapsAuthenticationFailureWithoutLeakingPasswordOrResponseBody() {
         String password = "never-log-this-router-password";
         TestTransport transport = testTransport();
