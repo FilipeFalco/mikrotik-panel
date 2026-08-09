@@ -1,5 +1,6 @@
 package com.mikrotikmanager.service;
 
+import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.RouterInterface;
@@ -104,8 +105,14 @@ class PortServiceTest {
                 deviceRepository,
                 portRepository,
                 new OperationLockManager(),
-                auditService);
-        return new PortService(gateway, portRepository, deviceService, new OperationLockManager(), auditService);
+                auditService,
+                writeGuard());
+        return new PortService(gateway, portRepository, deviceService, new OperationLockManager(), auditService, writeGuard());
+    }
+
+    private MikrotikWriteGuard writeGuard() {
+        return new MikrotikWriteGuard(new MikrotikProperties("10.0.0.1", 443, "admin", "secret", true,
+                true, false));
     }
 
     private static final class CountingGateway implements MikrotikGateway {

@@ -29,14 +29,16 @@ public class PortService {
     private final DeviceService deviceService;
     private final OperationLockManager lockManager;
     private final AuditService auditService;
+    private final MikrotikWriteGuard writeGuard;
 
     public PortService(MikrotikGateway gateway, ManagedPortRepository managedPortRepository, DeviceService deviceService,
-                       OperationLockManager lockManager, AuditService auditService) {
+                       OperationLockManager lockManager, AuditService auditService, MikrotikWriteGuard writeGuard) {
         this.gateway = gateway;
         this.managedPortRepository = managedPortRepository;
         this.deviceService = deviceService;
         this.lockManager = lockManager;
         this.auditService = auditService;
+        this.writeGuard = writeGuard;
     }
 
     public List<PortView> listPorts() {
@@ -72,14 +74,30 @@ public class PortService {
             throw new ApiException(ApiErrorCode.INVALID_INPUT, HttpStatus.BAD_REQUEST,
                     "A rede deve estar no formato CIDR, por exemplo 10.10.10.0/24.");
         }
-        ensureInterfaceExists(interfaceName);
-        return lockManager.withLock("port:" + interfaceName, () -> managedPortRepository.save(new ManagedPort(
-                0, interfaceName, friendlyName.trim(), description, network, dhcpServer, enabled, Instant.now(), Instant.now()
-        )));
+        String normalizedNetwork = CidrValidator.normalize(network);
+        writeGuard.checkWriteAllowed();
+        return lockManager.withLock("port:" + interfaceName, () -> {
+            ensureInterfaceExists(interfaceName);
+            ManagedPort previous = managedPortRepository.findByInterfaceName(interfaceName).orElse(null);
+            ManagedPort requested = new ManagedPort(
+                    0, interfaceName, friendlyName.trim(), description, normalizedNetwork, dhcpServer, enabled, Instant.now(), Instant.now()
+            );
+            try {
+                ManagedPort saved = managedPortRepository.save(requested);
+                auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
+                        formatConfiguration(previous), formatConfiguration(saved), true, null);
+                return saved;
+            } catch (RuntimeException exception) {
+                auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
+                        formatConfiguration(previous), formatConfiguration(requested), false, safeMessage(exception));
+                throw exception;
+            }
+        });
     }
 
     public PortView setSpeed(String interfaceName, SpeedLimit requestedLimit) {
         validateSpeed(requestedLimit);
+        writeGuard.checkWriteAllowed();
         return lockManager.withLock("port:" + interfaceName, () -> {
             ensureInterfaceExists(interfaceName);
             validateAgainstDevices(interfaceName, requestedLimit, gateway.listDevices());
@@ -148,6 +166,16 @@ public class PortService {
 
     private String format(SpeedLimit limit) {
         return "download=" + limit.downloadBps() + "bps, upload=" + limit.uploadBps() + "bps";
+    }
+
+    private String formatConfiguration(ManagedPort port) {
+        if (port == null) {
+            return "absent";
+        }
+        return "friendlyName=" + port.friendlyName()
+                + ", network=" + port.network()
+                + ", dhcpServer=" + port.dhcpServer()
+                + ", enabled=" + port.enabled();
     }
 
     private String safeMessage(RuntimeException exception) {
