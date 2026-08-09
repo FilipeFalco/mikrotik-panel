@@ -8,8 +8,8 @@ interface DashboardProps {
 }
 
 export function Dashboard({ ports, onManage }: DashboardProps) {
-  const internetPort = ports.find((port) => port.interfaceName === 'ether1');
-  const clientPorts = ports.filter((port) => port.enabled);
+  const internetPort = ports.find((port) => port.enabled && port.role === 'WAN');
+  const clientPorts = ports.filter((port) => port.enabled && port.role === 'CLIENT');
 
   return (
     <div className="page-stack">

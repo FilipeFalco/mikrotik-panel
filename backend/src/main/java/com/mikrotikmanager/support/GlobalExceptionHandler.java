@@ -23,9 +23,19 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MikrotikGatewayException.class)
     ResponseEntity<ErrorResponse> handleGatewayException(MikrotikGatewayException exception) {
-        log.warn("MikroTik gateway operation failed reason={}", exception.getMessage());
-        return response(HttpStatus.SERVICE_UNAVAILABLE, ApiErrorCode.MIKROTIK_UNAVAILABLE,
-                "Não foi possível comunicar com o MikroTik.");
+        log.warn("MikroTik gateway operation failed type={}", exception.errorType());
+        return switch (exception.errorType()) {
+            case AUTHENTICATION_FAILED -> response(HttpStatus.UNAUTHORIZED, ApiErrorCode.MIKROTIK_AUTHENTICATION_FAILED,
+                    "A autenticação no MikroTik falhou ou o usuário não possui permissão de leitura.");
+            case BAD_RESPONSE -> response(HttpStatus.BAD_GATEWAY, ApiErrorCode.MIKROTIK_BAD_RESPONSE,
+                    "O MikroTik retornou uma resposta de leitura inesperada.");
+            case TLS_ERROR -> response(HttpStatus.BAD_GATEWAY, ApiErrorCode.MIKROTIK_TLS_ERROR,
+                    "Não foi possível validar a conexão TLS com o MikroTik.");
+            case WRITE_NOT_IMPLEMENTED -> response(HttpStatus.FORBIDDEN, ApiErrorCode.MIKROTIK_WRITES_DISABLED,
+                    "A escrita RouterOS não é implementada na Fase 2.");
+            case UNAVAILABLE -> response(HttpStatus.SERVICE_UNAVAILABLE, ApiErrorCode.MIKROTIK_UNAVAILABLE,
+                    "Não foi possível comunicar com o MikroTik.");
+        };
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

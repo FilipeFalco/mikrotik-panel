@@ -7,12 +7,13 @@ import { DeviceList } from './DeviceList';
 interface PortDetailProps {
   port: Port;
   saving: boolean;
+  readOnly?: boolean;
   onSaveSpeed: (port: Port, downloadBps: number, uploadBps: number) => void;
   onDeviceSelect: (device: Device) => void;
   onBack: () => void;
 }
 
-export function PortDetail({ port, saving, onSaveSpeed, onDeviceSelect, onBack }: PortDetailProps) {
+export function PortDetail({ port, saving, readOnly = false, onSaveSpeed, onDeviceSelect, onBack }: PortDetailProps) {
   const [download, setDownload] = useState(bpsToMbps(port.downloadLimitBps));
   const [upload, setUpload] = useState(bpsToMbps(port.uploadLimitBps));
   const [errors, setErrors] = useState<{ download?: string; upload?: string }>({});
@@ -25,6 +26,7 @@ export function PortDetail({ port, saving, onSaveSpeed, onDeviceSelect, onBack }
 
   const save = (event: React.FormEvent) => {
     event.preventDefault();
+    if (readOnly) return;
     const parsedDownload = parseMbps(download);
     const parsedUpload = parseMbps(upload);
     setErrors({
@@ -48,11 +50,16 @@ export function PortDetail({ port, saving, onSaveSpeed, onDeviceSelect, onBack }
       </section>
 
       <section className="surface speed-editor">
-        <div className="section-heading"><div><p className="eyebrow">Controle de banda</p><h2>Limite total da rede</h2></div><p className="subtle">O mock aplica a alteração imediatamente.</p></div>
+        <div className="section-heading">
+          <div><p className="eyebrow">Controles RouterOS</p><h2>Limite total da rede</h2></div>
+          <p className="subtle">{readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : 'O mock aplica a alteração imediatamente.'}</p>
+        </div>
         <form onSubmit={save} className="speed-form">
-          <label>Download <div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-label="Limite de download em Mbps" aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'port-download-error' : undefined} /><span>Mbps</span></div>{errors.download && <small id="port-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
-          <label>Upload <div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-label="Limite de upload em Mbps" aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'port-upload-error' : undefined} /><span>Mbps</span></div>{errors.upload && <small id="port-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
-          <button type="submit" className="button primary" disabled={saving}>{saving ? 'Salvando…' : 'Salvar limite'}</button>
+          <label>Download <div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-label="Limite de download em Mbps" aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'port-download-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.download && <small id="port-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
+          <label>Upload <div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-label="Limite de upload em Mbps" aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'port-upload-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.upload && <small id="port-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
+          <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
+            <button type="submit" className="button primary" disabled={saving || readOnly}>{saving ? 'Salvando…' : 'Salvar limite'}</button>
+          </span>
         </form>
       </section>
 

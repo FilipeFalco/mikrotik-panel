@@ -37,9 +37,8 @@ public class PortController {
 
     @PutMapping("/{interfaceName}")
     public PortResponse updateConfiguration(@PathVariable String interfaceName, @Valid @RequestBody UpdatePortRequest request) {
-        portService.updateConfiguration(interfaceName, request.friendlyName(), request.description(), request.network(),
-                request.dhcpServer(), request.enabled());
-        return ResponseMapper.port(portService.getPort(interfaceName));
+        return ResponseMapper.port(portService.updateConfiguration(interfaceName, request.friendlyName(), request.description(),
+                request.network(), request.dhcpServer(), request.enabled(), request.role()));
     }
 
     @PutMapping("/{interfaceName}/speed")

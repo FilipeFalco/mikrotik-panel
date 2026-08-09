@@ -1,118 +1,194 @@
 # Arquitetura — MikroTik Local Manager
 
-## Escopo atual
+## Escopo atual: Fase 2 somente leitura
 
-Esta entrega implementa a Fase 1: monorepo, API local, SQLite, mock mode, dashboard e fluxos completos de desenvolvimento para editar limites e bloquear/liberar dispositivos **somente em memória**. Ela não abre conexão com um MikroTik real e, portanto, não faz alterações no roteador.
-
-## Visão geral
+A aplicação local lê dados de um RouterOS 7 por REST e preserva escrita apenas
+no SQLite local. Em modo real, o RouterOS é fonte de verdade para interfaces,
+leases, queues observadas e diagnóstico; SQLite é fonte de verdade para
+metadados escolhidos pelo operador e auditoria.
 
 ```text
-Browser (localhost:3000)
-        │ HTTP /api
+Browser (localhost)
+        │ /api
         ▼
 React + Vite
-        │ proxy local
         ▼
-Spring Boot (127.0.0.1:8080)
-        ├── SQLite + Flyway ── nomes, preferências e auditoria
-        └── MikrotikGateway
-              ├── MockMikrotikGateway (Fase 1)
-              └── UnavailableMikrotikGateway (quando mock=false na Fase 1)
+Spring Boot (127.0.0.1)
+ ├── SQLite + Flyway
+ │   ├── managed_port: nome, descrição, CIDR, DHCP server, visibilidade e papel WAN/CLIENT
+ │   ├── managed_device: nome amigável e observações
+ │   └── audit_log: auditoria local sem segredos
+ └── MikrotikGateway
+     ├── MockMikrotikGateway
+     └── RouterOsRestGateway
+         └── RouterOsRestClient → HTTPS GET /rest → RouterOS
 ```
 
-O frontend nunca recebe credenciais e nunca fala diretamente com o RouterOS. O processo do backend, por padrão, está vinculado a `127.0.0.1`.
+O frontend não conhece JSON RouterOS, TLS, Basic Auth, paths REST ou credenciais.
+O backend monta a origem HTTPS a partir de host/porta; ele nunca aceita URL
+RouterOS arbitrária do browser.
 
-Não há `RouterOsRestGateway` funcional nesta fase e não há chamadas para `/rest`. Quando `MIKROTIK_MOCK_MODE=false`, o gateway indisponível devolve um estado de conexão amigável; ele não abre conexão de rede com um equipamento.
+## Seleção de gateway
 
-## Responsabilidades
+| Configuração | Gateway | Comportamento |
+| --- | --- | --- |
+| `MIKROTIK_MOCK_MODE=true` | `MockMikrotikGateway` | fixtures em memória; nenhuma conexão de rede |
+| `MIKROTIK_MOCK_MODE=false` | `RouterOsRestGateway` | leitura real HTTPS REST |
 
-| Camada | Responsabilidade |
-| --- | --- |
-| `api` | DTOs e API HTTP própria; entidades de persistência não são expostas. |
-| `service` | Regras de limite, auditoria, associação de dados e serialização local por dispositivo/porta. |
-| `gateway` | Contrato estável com o RouterOS e conversão para modelos internos. |
-| `persistence` | SQLite apenas para estado local intencional. |
-| `frontend` | Dashboard, filtros, confirmação de bloqueio, estados de carregamento e erros. |
+O antigo gateway indisponível da Fase 1 não participa mais da configuração. Uma
+falha de rede do gateway real é representada por status desconectado ou erro
+sanitizado, sem derrubar serviços SQLite locais.
 
-`MikrotikGateway` é a fronteira que impede JSON cru do RouterOS de vazar para o resto da aplicação. Os modelos internos representam interfaces, leases/dispositivos, tráfego, limites e estado de conexão.
+## Fronteira RouterOS
 
-Para o carregamento do dashboard, `PortService` obtém interfaces, dispositivos e velocidades por operações agregadas (`listInterfaces`, `listDevices` e `listPortSpeeds`) e agrupa os dispositivos por interface em memória. Assim, não há uma nova consulta de dispositivos ou velocidade para cada porta, o que prepara a fronteira para um gateway HTTP futuro sem criar N+1.
-
-## Estado e banco local
-
-O RouterOS será a fonte de verdade para interfaces, leases, IP atual, status, queues, bloqueios e tráfego. O SQLite (`data/mikrotik-manager.db`) armazena apenas:
-
-- `managed_port`: nome amigável, descrição, rede, servidor DHCP configurado e visibilidade no painel;
-- `managed_device`: nome amigável e observações locais por MAC;
-- `audit_log`: operações administrativas, sem segredos.
-
-O mock inicial só faz o seed dessas portas quando o banco está vazio. Nenhum dado dinâmico do RouterOS é duplicado no banco.
-
-O projeto permanece na linha Spring Boot 3.5.x. O BOM do Spring Boot gerencia Flyway, sem pin manual de versão, e as migrations SQLite continuam executadas por `flyway-core` gerenciado.
-
-As redes de `managed_port` são CIDRs de IP literal: hostnames como `router.local/24` são rejeitados sem resolução DNS. Antes de persistir, o endereço é normalizado para o endereço de rede; por exemplo, `10.10.10.17/24` é armazenado como `10.10.10.0/24`. IPv4 e IPv6 literais são aceitos quando o prefixo é válido.
-
-## Escrita, auditoria e limites
-
-`MIKROTIK_WRITE_ENABLED=false` é o kill switch padrão. A decisão é centralizada no `MikrotikWriteGuard`:
-
-- em mock mode, mutações são permitidas somente no estado simulado, para que a UI possa ser desenvolvida e testada;
-- em modo real futuro, `MIKROTIK_WRITE_ENABLED=false` recusa somente mutações que alterariam o RouterOS antes de chegar ao gateway;
-- em modo real futuro, escrita somente poderá ser considerada quando a variável for habilitada explicitamente e houver um adaptador real revisado.
-
-Nomes amigáveis, observações e configurações de `managed_port` pertencem ao SQLite local e permanecem editáveis em modo real somente leitura; o guard não é aplicado a essas operações. Mutações concluídas e falhas que ocorram durante uma tentativa são gravadas em `audit_log`, sem credenciais ou headers. Falhas de validação, regras de domínio e recusas do guard de escrita RouterOS acontecem antes da tentativa e não são auditadas. Isso evita registrar uma operação que não chegou a ser tentada e mantém a política consistente.
-
-O serviço verifica download e upload separadamente: o limite individual deve ser menor ou igual ao da porta e uma redução de porta é recusada se algum dispositivo ficaria acima do novo limite. O valor `0` significa sem limite; portanto, uma porta ilimitada não invalida um limite individual.
-
-## Decisões RouterOS confirmadas
-
-A documentação oficial atual informa que a REST API é o wrapper JSON da API, fica em `/rest`, usa HTTP Basic Auth e usa `GET`, `PATCH`, `PUT` e `DELETE` para leitura, alteração, criação e remoção. Ela também informa que todos os valores de respostas JSON são strings e que comandos contínuos de monitoramento não são suportados; será usado `monitor once` com polling nas fases de métricas. [REST API do RouterOS](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
-
-Em uma futura Fase 2, um adaptador somente leitura poderá consultar menus correspondentes à CLI, sem endpoints inventados: `/rest/system/resource`, `/rest/interface`, `/rest/ip/dhcp-server`, `/rest/ip/dhcp-server/lease`, `/rest/queue/simple` e `/rest/ip/firewall/filter`. Esta é apenas uma decisão de desenho: nenhum desses endpoints é chamado pela Fase 1. Alterações futuras serão feitas somente em recursos individuais identificados por `.id` retornado pelo RouterOS.
-
-A associação lease → porta será obtida pelo servidor DHCP e sua interface, e só então confirmada pela rede CIDR cadastrada. Não haverá associação baseada em nomes fixos como `dhcp-cliente1`.
-
-## Controle de velocidade (decisão para Fase 5)
-
-O mecanismo inicialmente escolhido é uma hierarquia de **Simple Queues** gerenciadas pela aplicação:
+`MikrotikGateway` expõe modelos de domínio (`RouterInterface`, `RouterDevice`,
+`SpeedLimit`, `TrafficRate` e `GatewayConnectionStatus`), não `JsonNode`,
+`Map<String, Object>` ou DTOs de transporte.
 
 ```text
-Simple Queue pai: MTMGR:PORT:ether2
-target=10.10.10.0/24
-max-limit=<total da porta>
-       └── Simple Queue filha: MTMGR:DEVICE:AA-BB-CC-DD-EE-02
-           target=<IP atual>/32
-           parent=<fila pai>
-           max-limit=<limite individual>
+RouterOsRestClient
+    ↓ DTOs RouterOS com Strings
+RouterOsMapper / RouterOsDhcpMapper / RouterOsSimpleQueueMapper
+    ↓ modelos de domínio
+services → API → frontend
 ```
 
-Assim, a fila pai contém o tráfego agregado da rede e as filas filhas só estabelecem o teto individual. A soma dos tetos das filhas pode exceder o teto do pai sem exceder o limite total da porta. A documentação confirma que Simple Queues suportam `target`, `max-limit` e relação `parent`, e alerta que o pai precisa capturar o tráfego necessário. A implementação real validará a ordem upload/download do campo RouterOS com um teste controlado antes de habilitar escrita. [Queues do RouterOS](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
+DTOs ficam em `gateway/routeros/dto` e ignoram propriedades novas/desconhecidas.
+Isso protege o restante da aplicação das particularidades REST: RouterOS
+documenta que valores de objetos JSON são strings, inclusive números e
+booleans. [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
-Não será introduzido Queue Tree ou mangle no MVP sem necessidade. Eles aumentariam o risco operacional e exigiriam marcação de pacotes.
+O cliente REST é read-only por construção: ele oferece coleções `get…`, não um
+método genérico que receba verbo HTTP, body ou comando. Os únicos paths são:
 
-## Bloqueio (decisão para Fase 4)
+```text
+GET /rest/system/resource
+GET /rest/interface
+GET /rest/ip/dhcp-server
+GET /rest/ip/dhcp-server/lease
+GET /rest/queue/simple
+GET /rest/ip/firewall/filter
+```
 
-O RouterOS expõe `block-access` em DHCP leases. A Fase 4 verificará em equipamento real se o lease alvo pode ser tornado estático e marcado com `MTMGR:DEVICE:<MAC>` sem alterar configuração manual existente. Só então esse mecanismo será usado para bloquear de forma reversível. Caso esse fluxo não seja seguro para o lease observado, a interface exibirá uma limitação em vez de criar regras de firewall desconhecidas.
+**RouterOS HTTP methods used: GET only.** Embora o RouterOS REST também suporte
+verbos mutáveis e comandos via POST, a Fase 2 não os chama.
+[REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
-Esta decisão é deliberadamente conservadora: não haverá remoção/edição de leases, filas ou regras sem confirmação explícita e exata de propriedade. Para um dispositivo, somente `MTMGR:DEVICE:<MAC-normalizado-com-hífens>` correspondente exatamente ao MAC é aceito; para uma porta, somente `MTMGR:PORT:<interface>` correspondente exatamente à interface é aceito. Um comentário `MTMGR:` genérico, MAC de outro dispositivo ou outra porta não concede propriedade. A documentação do DHCP lista `block-access` e o comando `make-static` no menu de leases. [DHCP do RouterOS](https://manual.mikrotik.com/docs/network-management/dhcp/)
+## Dados e correlação
 
-## FastTrack
+### Configuração local de portas
 
-FastTrack será detectado em diagnóstico, nunca desabilitado automaticamente. A documentação diz que conexões FastTrack podem contornar Simple Queues e outras facilidades L3. Antes de qualquer limite real, a aplicação mostrará a regra detectada, o impacto e a orientação manual. [Packet Flow do RouterOS](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+O RouterOS descobre interfaces por `GET /rest/interface`; ele é a fonte de
+verdade apenas para a existência e o estado observado delas. Uma interface
+Ethernet nova sem registro em `managed_port` é não gerenciada e continua visível em
+**Configurações → Interfaces descobertas**. O operador pode então persistir
+nome amigável, descrição, CIDR, DHCP server, visibilidade e papel local no
+SQLite por `PUT /api/ports/{interface}`.
+
+```text
+RouterOS descobre interface → configuração local → SQLite → dashboard
+```
+
+`WAN` e `CLIENT` são papéis locais, não características inferidas do nome ou
+tipo físico da interface. O dashboard escolhe a Internet pelo papel `WAN` e
+lista portas de cliente habilitadas pelo papel `CLIENT`; não há regra de que
+`ether1` seja Internet. A atribuição de papel não altera rota, NAT, DHCP
+client, interface list, firewall nem qualquer outro estado RouterOS. O fixture
+de mock pode declarar `ether1` como WAN, mas isso não é lógica de runtime.
+
+Como essa persistência ocorre somente no SQLite, ela permanece disponível em
+modo real read-only. A API local pode usar `PUT`; a restrição GET-only se aplica
+ao transporte entre backend e RouterOS.
+
+`RouterOsMapper` preserva `name`, `type`, `running` e `disabled` de interfaces.
+Tráfego instantâneo permanece indisponível: byte counters acumulados não são
+convertidos sem uma amostragem explícita e testada.
+
+`RouterOsDhcpMapper` constrói uma vez o mapa DHCP server → interface e processa
+as leases em memória:
+
+```text
+lease.server → DHCP server.name → DHCP server.interface → RouterDevice.interfaceName
+```
+
+Não há query por lease. MAC é normalizado pela regra central da aplicação;
+lease sem MAC válido ou sem associação server/interface é ignorado de forma
+isolada e gera warning sanitizado. `block-access=true` vira `BLOCKED`,
+`status=bound` vira `ONLINE` quando não bloqueado, e demais estados são
+`UNKNOWN`. O CIDR local funciona apenas como conferência posterior.
+[DHCP oficial](https://manual.mikrotik.com/docs/network-management/dhcp/)
+
+`RouterOsSimpleQueueMapper` observa somente queues cujo comentário é exatamente
+`MTMGR:PORT:<interface>`. Queue manual não é adotada. `max-limit` RouterOS é
+`upload/download`, enquanto o domínio usa `download/upload`; a inversão ocorre
+uma única vez no parser da fronteira e tem teste de direção.
+[Queues oficiais](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
+
+## Status, polling e diagnóstico
+
+`connectionStatus()` mede uma leitura de `/rest/system/resource` e devolve
+versão/latência aproximada. É o caminho leve para polling de status; ele não lê
+DHCP, interfaces, queues ou firewall.
+
+O frontend faz polling de `/api/ports` enquanto conectado e deriva a lista
+global de dispositivos das portas retornadas, evitando uma chamada simultânea
+desnecessária a `/api/devices`. A API `GET /api/devices` continua disponível.
+
+`MikrotikDiagnosticsGateway` separa checagens por recurso sob demanda:
+
+| Check | Leitura |
+| --- | --- |
+| REST API | `system/resource` |
+| Interfaces | `interface` |
+| DHCP | DHCP servers + leases correlacionadas |
+| Queues | `queue/simple` |
+| FastTrack | `ip/firewall/filter` |
+
+FastTrack só é consultado em diagnóstico. Regra habilitada com
+`action=fasttrack-connection` é informada, nunca alterada. Isso é relevante
+porque FastTrack pode ignorar Simple Queues e outras facilidades L3.
+[Packet Flow oficial](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+
+Lista vazia de queues é um sucesso. Cada check pode falhar independentemente;
+por exemplo, REST/system resource pode funcionar enquanto DHCP falha.
 
 ## Segurança
 
-- `MIKROTIK_PASSWORD` é lida apenas pelo backend; não existe no código do frontend nem no SQLite.
-- `MikrotikProperties.toString()` não revela a senha, reduzindo o risco de exposição acidental em logs futuros.
-- `MIKROTIK_VERIFY_SSL=true` é o padrão. A opção `false` será tratada somente no cliente HTTP dedicado ao RouterOS da Fase 2 e só deve ser usada conscientemente em desenvolvimento controlado com certificado self-signed ainda não confiável. Nenhuma validação TLS global será desabilitada.
-- `MIKROTIK_WRITE_ENABLED=false` é o padrão para escrita no RouterOS; mock mode permanece mutável apenas em memória, enquanto configurações locais do SQLite continuam editáveis em modo real somente leitura.
-- CORS permite somente a origem local configurada.
-- Logs usam identificadores operacionais (MAC/porta), nunca senha, header Authorization ou cookie.
-- `OperationLockManager` serializa alterações concorrentes por MAC ou interface no processo local.
-- Operações de mock já são idempotentes; a Fase 4/5 preservará a mesma propriedade no RouterOS por meio de busca prévia de comentários gerenciados.
+Em modo real, a segurança contra escrita acidental é redundante:
 
-## Limitações conhecidas da Fase 1
+1. Usuário RouterOS dedicado com `read,rest-api`, sem `write`.
+2. `MIKROTIK_WRITE_ENABLED=false` por padrão.
+3. `MikrotikWriteGuard` recusa APIs de mutação RouterOS quando escrita está
+   desabilitada.
+4. `RouterOsRestGateway` sempre lança `WRITE_NOT_IMPLEMENTED` antes de rede
+   para `setPortSpeed`, `setDeviceSpeed`, `blockDevice` e `unblockDevice`, mesmo
+   se `writeEnabled=true`.
 
-- Tráfego individual é dado simulado; o RouterOS pode não fornecer uma métrica individual confiável pela REST API sem instrumentação adicional.
-- `MIKROTIK_MOCK_MODE=false` retorna status de integração ainda indisponível; não tenta acesso à rede.
-- Não há qualquer mudança real de DHCP, firewall, queue, FastTrack, bridge, NAT, rota ou interface nesta fase.
+As mutações **locais** não passam pelo guard: metadados e configuração de portas
+continuam graváveis no SQLite.
+
+Basic Auth fica somente no cliente backend. `MikrotikProperties.toString()`
+mascara senha; falhas e logs RouterOS não incluem senha, header Authorization,
+body remoto nem stack trace na resposta API.
+
+Com `verifySsl=true`, o TLS verifica certificado e hostname/IP usando o
+truststore da JVM que executa o backend — em instalações padrão, normalmente o
+`cacerts` do JDK/JRE desse processo. A CA/certificado do RouterOS deve ser
+confiável por esse truststore, ou a JVM deve ser iniciada com um truststore
+explicitamente configurado. `verifySsl=false` é uma exceção isolada no
+`RouterOsRestClient` para desenvolvimento local com self-signed não confiável;
+não instala trust-all global na JVM. Timeouts padrão são 3 s para conectar e 5
+s para resposta.
+
+401/403 viram falha de autenticação/permissão; indisponibilidade, TLS e payload
+inesperado são categorias separadas e sanitizadas. Consulte
+[routeros-readonly-integration.md](routeros-readonly-integration.md) para a
+tabela de erros e configuração.
+
+## Fora do escopo
+
+Não há escrita RouterOS, tráfego instantâneo por monitor/POST, bloqueio real,
+alteração de DHCP, criação/alteração/remoção de queues, mudança de firewall ou
+FastTrack, nem configuração de bridge, IP, NAT, rota, VLAN ou DNS.
+
+Physical RouterOS validation: **not performed in this workspace.**

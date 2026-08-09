@@ -1,43 +1,34 @@
 # MikroTik Local Manager
 
-Gerenciador web local para visualizar portas/clientes, dispositivos DHCP, bloqueios e limites de banda de um MikroTik RouterOS 7, sem expor credenciais ao navegador.
+Painel web local para visualizar interfaces, leases DHCP, Simple Queues e
+diagnósticos de um RouterOS 7 sem expor credenciais ao navegador.
 
-> Estado atual: **Fase 1 concluída — fundação e mock mode**. O painel é funcional em dados simulados, com SQLite, dashboard, busca/filtros, limites, bloqueio/liberação e auditoria local. A integração REST de leitura com um RouterOS real começa na Fase 2 e ainda não foi habilitada nesta entrega.
+> Estado atual: **Fase 2 — integração RouterOS REST somente leitura.** Em modo
+> real, o backend emite apenas HTTPS `GET` para RouterOS. Nenhuma escrita
+> RouterOS foi implementada.
 
 ## Requisitos
 
-- Java 21 LTS (ou JDK mais novo que suporte compilação com `--release 21`);
-- Node.js 20+ LTS e npm;
-- não é necessário instalar Maven globalmente: o Maven Wrapper oficial está em `backend/`;
-- RouterOS 7 somente quando a Fase 2 for utilizada.
-
-Docker não é necessário.
-
-## Estrutura
+- Java 21 LTS;
+- Node.js 20+ e npm;
+- RouterOS 7 somente para modo real;
+- Maven global não é necessário: use `backend/mvnw`.
 
 ```text
-.
-├── backend/       Spring Boot, SQLite, Flyway, gateway e Maven Wrapper oficial
-│   ├── mvnw       Wrapper para Linux/macOS
-│   ├── mvnw.cmd   Wrapper para Windows
-│   └── .mvn/      Configuração do Maven Wrapper
-├── frontend/      React, TypeScript e Vite
-├── data/          Banco SQLite local (ignorado pelo Git)
-├── docs/          Arquitetura e preparação manual do RouterOS
-└── .env.example   Modelo de variáveis locais
+Browser → Spring Boot local → HTTPS GET /rest → RouterOS
+                       ↘ SQLite local (metadados, papel da porta e auditoria)
 ```
+
+O frontend nunca recebe senha, header `Authorization` ou URL RouterOS. O
+backend, por padrão, escuta em `127.0.0.1:8080`.
 
 ## Executar em mock mode
 
-Em dois terminais, a partir da raiz do repositório:
+Mock mode é o padrão seguro para desenvolvimento e não acessa rede RouterOS.
 
 ```bash
 cp .env.example .env
-```
 
-Terminal 1 — backend:
-
-```bash
 cd backend
 set -a
 . ../.env
@@ -45,7 +36,7 @@ set +a
 ./mvnw spring-boot:run
 ```
 
-Terminal 2 — frontend:
+Em outro terminal:
 
 ```bash
 cd frontend
@@ -53,44 +44,162 @@ npm ci
 npm run dev
 ```
 
-Abra [http://localhost:3000](http://localhost:3000). O backend atende somente em `127.0.0.1:8080` e o Vite faz o proxy de `/api`.
+Abra [http://localhost:3000](http://localhost:3000). Em mock mode, bloquear,
+liberar e mudar limites alteram somente dados em memória para desenvolvimento;
+nenhuma chamada é enviada ao MikroTik.
 
-O modo mock vem ativado por padrão e inclui `ether1` a `ether5`, três clientes configurados e 12 dispositivos com combinações de online, offline, bloqueado, com limite e sem limite. Bloquear, liberar e editar limites atualiza apenas o estado em memória desta execução e gera auditoria no SQLite.
+## Executar com RouterOS real em modo somente leitura
 
-`MIKROTIK_WRITE_ENABLED=false` também é o padrão. Em mock mode, as mutações simuladas continuam permitidas deliberadamente, mesmo com esse valor: isso mantém os fluxos da UI exercitáveis sem um roteador físico. Em modo real futuro (`MIKROTIK_MOCK_MODE=false`), ele bloqueia apenas operações que alterariam o RouterOS antes de qualquer chamada de escrita ao gateway. Configurações locais persistidas no SQLite, como nomes amigáveis, observações e associações de portas, continuam editáveis.
+1. Siga [docs/routeros-setup.md](docs/routeros-setup.md) para configurar
+   `www-ssl`, certificado e usuário dedicado `read,rest-api` sem `write`.
+2. Copie `.env.example` para `.env` e mantenha o arquivo fora do Git.
+3. Configure o perfil seguro:
 
-Para zerar os nomes e histórico locais durante desenvolvimento, pare o backend e remova manualmente o arquivo `data/mikrotik-manager.db`. Ele é recriado na próxima execução em mock mode.
+```dotenv
+MIKROTIK_HOST=192.168.88.1
+MIKROTIK_PORT=443
+MIKROTIK_USERNAME=mtmgr
+MIKROTIK_PASSWORD=<segredo-local>
+MIKROTIK_VERIFY_SSL=true
+MIKROTIK_CONNECT_TIMEOUT_MS=3000
+MIKROTIK_READ_TIMEOUT_MS=5000
+MIKROTIK_MOCK_MODE=false
+MIKROTIK_WRITE_ENABLED=false
+```
 
-## Executar com MikroTik real
+4. Inicie backend e frontend como acima. Em Configurações, use **Testar
+   conexão**. A UI mostra `RouterOS 7.x · Somente leitura` após sucesso.
 
-A integração real **não está ativa na Fase 1**: não existe `RouterOsRestGateway` funcional e o backend não faz chamadas a `/rest`. Definir `MIKROTIK_MOCK_MODE=false` é seguro: o backend usa o gateway indisponível, informa o estado desconectado e não tenta acessar nem modificar o equipamento. Com `MIKROTIK_WRITE_ENABLED=false`, somente operações que alterariam o RouterOS são recusadas antes do gateway; configurações locais do SQLite permanecem editáveis quando os dados de leitura estiverem disponíveis.
+O botão pode chamar uma rota `POST` da nossa API local; a comunicação com
+RouterOS ainda é somente `GET /rest/system/resource`.
 
-Prepare o RouterOS e as variáveis para a próxima fase seguindo [docs/routeros-setup.md](docs/routeros-setup.md). Em especial:
+`MIKROTIK_VERIFY_SSL=true` valida a cadeia e o hostname/IP do certificado com
+as âncoras de confiança do truststore da JVM que executa o backend. Em uma
+instalação Java padrão, isso normalmente é o `cacerts` do JDK/JRE usado pelo
+processo — não apenas o repositório de certificados do navegador ou do sistema
+operacional. Para um certificado self-signed, faça a CA/certificado ser
+confiável por essa JVM; outra opção de implantação é iniciar a JVM com um
+truststore explicitamente configurado. Use `false` apenas em desenvolvimento
+local controlado: a exceção TLS fica isolada no `RouterOsRestClient` e não
+altera SSL global da JVM nem outros clientes HTTP.
 
-- use HTTPS (`www-ssl`) limitado ao IP do computador local;
-- use usuário dedicado, não `admin`;
-- comece com `read,rest-api` para validar somente leitura;
-- não desabilite FastTrack nem altere queues manualmente em nome da aplicação.
+## Variáveis de ambiente
 
-## Configurar variáveis
-
-O backend usa variáveis de ambiente; `.env` é apenas uma conveniência para ser carregada pelo shell e está ignorado pelo Git.
-
-| Variável | Padrão | Finalidade |
+| Variável | Padrão | Uso |
 | --- | --- | --- |
-| `MIKROTIK_HOST` | `10.0.0.1` | Host do RouterOS. |
-| `MIKROTIK_PORT` | `443` | Porta de `www-ssl`. |
-| `MIKROTIK_USERNAME` | vazio | Usuário exclusivo da aplicação. |
-| `MIKROTIK_PASSWORD` | vazio | Segredo somente do backend; não entra no SQLite. |
-| `MIKROTIK_VERIFY_SSL` | `true` | Validar certificado do RouterOS. Só use `false` conscientemente em desenvolvimento controlado com certificado self-signed ainda não confiável. |
-| `MIKROTIK_MOCK_MODE` | `true` | Usa dados simulados e não acessa o roteador. |
-| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch para escrita no RouterOS. Mock mode continua permitindo mutações simuladas; modo real com `false` recusa apenas mutações RouterOS antes do gateway, mantendo configurações locais no SQLite editáveis. |
+| `MIKROTIK_HOST` | `10.0.0.1` | Host ou IP RouterOS, sem URL/credenciais. |
+| `MIKROTIK_PORT` | `443` | Porta do serviço `www-ssl`. |
+| `MIKROTIK_USERNAME` | vazio | Usuário RouterOS dedicado, somente backend. |
+| `MIKROTIK_PASSWORD` | vazio | Segredo local; nunca frontend, SQLite ou log. |
+| `MIKROTIK_VERIFY_SSL` | `true` | Valida certificado e hostname/IP. |
+| `MIKROTIK_CONNECT_TIMEOUT_MS` | `3000` | Timeout de conexão, positivo. |
+| `MIKROTIK_READ_TIMEOUT_MS` | `5000` | Timeout de resposta, positivo. |
+| `MIKROTIK_MOCK_MODE` | `true` | Usa fixtures locais e nenhuma rede RouterOS. |
+| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch de escrita RouterOS; a Fase 2 não implementa escrita nem se `true`. |
 | `SERVER_ADDRESS` | `127.0.0.1` | Endereço de escuta do backend. |
 | `SERVER_PORT` | `8080` | Porta do backend. |
 | `APP_FRONTEND_ORIGIN` | `http://localhost:3000` | Única origem CORS permitida. |
-| `APP_DATA_DIR` | `../data` | Diretório do SQLite ao iniciar dentro de `backend/`. |
+| `APP_DATA_DIR` | `../data` | Diretório SQLite ao iniciar em `backend/`. |
 
-## Testes
+## O que o modo real lê
+
+| RouterOS REST path | Dados usados |
+| --- | --- |
+| `/rest/system/resource` | conexão, versão e latência |
+| `/rest/interface` | interfaces reais |
+| `/rest/ip/dhcp-server` | associação DHCP server → interface |
+| `/rest/ip/dhcp-server/lease` | dispositivos DHCP e status |
+| `/rest/queue/simple` | Simple Queues observadas/limites de porta com ownership exato |
+| `/rest/ip/firewall/filter` | FastTrack no diagnóstico sob demanda |
+
+**RouterOS HTTP methods used: GET only.** Não há `POST`, `PUT`, `PATCH` ou
+`DELETE` para o RouterOS. Leases são correlacionadas em memória por
+`lease.server → DHCP server.name → DHCP server.interface`, sem uma consulta por
+dispositivo. Um lease sem MAC utilizável ou sem DHCP server correspondente é
+ignorado de forma segura sem quebrar os demais.
+
+Veja os detalhes de DTOs, mappers, TLS, códigos de erro, direção de taxas e
+FastTrack em [docs/routeros-readonly-integration.md](docs/routeros-readonly-integration.md).
+
+## Segurança e comportamento de escrita
+
+Em RouterOS real, a defesa é deliberadamente redundante:
+
+1. Usuário RouterOS sem policy `write`.
+2. `MIKROTIK_WRITE_ENABLED=false`.
+3. `MikrotikWriteGuard` bloqueia operações RouterOS mutáveis.
+4. `RouterOsRestGateway` não tem implementação de mutação na Fase 2.
+
+Assim, botões de bloquear/liberar/alterar velocidade em modo real devolvem erro
+seguro antes de qualquer request mutável. Mesmo com
+`MIKROTIK_WRITE_ENABLED=true`, não criam queue, não alteram lease e não mudam
+firewall.
+
+SQLite continua sendo fonte de verdade apenas para estado local: nome amigável
+e observações do dispositivo; nome, descrição, CIDR, DHCP server e visibilidade
+da porta; papel `WAN` ou `CLIENT`; e auditoria. `PUT /api/devices/{mac}` e
+`PUT /api/ports/{interface}` continuam permitidos para esses metadados locais
+em read-only.
+
+## Configuração local de portas e WAN
+
+Interfaces vêm do RouterOS por `GET /rest/interface`. Uma interface descoberta
+que ainda não exista no SQLite aparece em **Configurações → Interfaces
+descobertas** como não gerenciada. Nessa tela o operador pode salvar nome
+amigável, descrição, CIDR, DHCP server, visibilidade no dashboard e o papel
+local `WAN` ou `CLIENT`.
+
+```text
+RouterOS descobre interface
+          ↓
+operador configura metadados locais
+          ↓
+SQLite local
+          ↓
+dashboard
+```
+
+Esse fluxo usa somente `PUT /api/ports/{interface}` na API local. Ele não muda
+interface, rota, NAT, DHCP client, firewall ou qualquer outra configuração do
+RouterOS. A porta física não é renomeada no equipamento. Em modo real
+read-only, esses campos locais continuam editáveis.
+
+O dashboard identifica a Internet pelo papel local `WAN`, não pelo nome físico
+da interface. Portanto, a WAN pode ser `ether5` ou outra interface apresentada
+pelo fluxo de portas atual; `ether1` é WAN apenas no fixture de mock atual, não
+uma regra do produto.
+
+## Diagnóstico e erros
+
+O polling leve de status lê apenas `system/resource`. Diagnósticos separados
+verificam REST API, Interfaces, DHCP, Queues e FastTrack; FastTrack não é
+consultado a cada cinco segundos. Lista de queues vazia é sucesso, não erro.
+
+| Situação | Resultado seguro |
+| --- | --- |
+| 401/403 | falha de autenticação/permissão de leitura |
+| rede, DNS, timeout ou 5xx | MikroTik desconectado; SQLite e histórico continuam disponíveis |
+| TLS | mensagem de validação TLS sem detalhe sensível |
+| JSON inesperado | erro controlado, sem body/stack trace RouterOS |
+
+As mensagens e logs não incluem senha ou `Authorization`.
+
+## Limitações da Fase 2
+
+- Sem tráfego instantâneo via `monitor`/POST; contadores acumulados não são
+  apresentados como Mbps.
+- Sem bloqueio real, `make-static`, alteração de `block-access` ou rate-limit
+  de DHCP.
+- Sem criação, edição, remoção ou reordenação de Simple Queues.
+- Sem alteração de firewall/FastTrack, bridge, IP, DHCP, NAT, rota, VLAN, DNS
+  ou interface.
+- Sem multi-router, acesso remoto, billing, WebSocket ou SSE.
+
+FastTrack pode contornar Simple Queues e é apenas detectado/avisado. Queues
+manuais não são adotadas; somente comentário exatamente
+`MTMGR:PORT:<interface>` prova ownership local.
+
+## Testes e build
 
 Backend:
 
@@ -99,8 +208,6 @@ cd backend
 ./mvnw test
 ./mvnw package
 ```
-
-No Windows, execute `mvnw.cmd test` e `mvnw.cmd package` dentro de `backend/`.
 
 Frontend:
 
@@ -111,68 +218,14 @@ npm test
 npm run build
 ```
 
-`npm ci` é a instalação reprodutível usada para testar e construir o frontend; use `npm install` somente quando for atualizar dependências e, então, revise e versione o `package-lock.json` resultante.
+Os testes incluem fake RouterOS, autenticação/indisponibilidade/resposta inválida,
+correlação DHCP, direção de queue, FastTrack, bloqueio de métodos mutáveis e
+verificação arquitetural de GET-only.
 
-Os testes do backend cobrem mock mode, idempotência de bloqueio, identificadores gerenciados, validação/normalização de CIDR, regras de limite entre porta e dispositivo, kill switch de escrita, consultas agregadas ao gateway e a integração Spring + SQLite + Flyway. Os testes do frontend cobrem dashboard, filtros de dispositivos, confirmação de bloqueio, estado desconectado e validação de Mbps.
+## Documentação RouterOS
 
-## Build
+- [Preparação manual e usuário read-only](docs/routeros-setup.md)
+- [Arquitetura e decisões da integração de leitura](docs/routeros-readonly-integration.md)
+- [REST API oficial da MikroTik](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
-```bash
-cd backend
-./mvnw package
-
-cd ../frontend
-npm ci
-npm run build
-```
-
-## Decisões técnicas relevantes
-
-- O backend usa uma API própria, DTOs e uma interface `MikrotikGateway`; o restante do código não depende de JSON cru do RouterOS.
-- O carregamento de portas lê interfaces, dispositivos e velocidades em operações agregadas e correlaciona os dados em memória, evitando N+1 quando o gateway vier a ser HTTP.
-- SQLite é fonte de verdade somente para nomes amigáveis, configurações locais de portas e auditoria. RouterOS será fonte de verdade para estado de rede.
-- CIDRs aceitam apenas IPs literais (sem DNS) e a rede é normalizada antes de persistir; por exemplo, `10.10.10.17/24` torna-se `10.10.10.0/24`.
-- Recursos futuros criados pela aplicação usarão comentários exatos `MTMGR:PORT:<interface>` e `MTMGR:DEVICE:<MAC-normalizado>`; um prefixo genérico `MTMGR:` nunca comprova propriedade para uma alteração ou remoção.
-- Um limite de dispositivo não pode exceder o limite da porta, e uma redução de porta é recusada se deixar algum dispositivo acima dela. Zero significa sem limite.
-- Mutações concluídas e falhas ocorridas durante uma tentativa são auditadas sem segredos. Validações de entrada/regra de domínio e o kill switch recusam a solicitação antes da tentativa e não geram auditoria.
-- A estratégia documentada para banda é fila simples pai por sub-rede e filas filhas por dispositivo, para manter o teto agregado da porta.
-- FastTrack será apenas detectado e avisado; o aplicativo não o altera automaticamente.
-
-Leia os detalhes em [docs/architecture.md](docs/architecture.md).
-
-## Troubleshooting
-
-### O frontend não inicia
-
-Confirme Node.js e npm:
-
-```bash
-node --version
-npm --version
-```
-
-Depois execute `npm ci` dentro de `frontend/`. Use `npm install` somente para atualizar dependências e o lockfile.
-
-### O backend não inicia ou o SQLite não abre
-
-Inicie a aplicação a partir de `backend/`, como mostrado acima, para que o padrão `APP_DATA_DIR=../data` aponte para `data/`. Confirme também que há permissão de escrita nesse diretório.
-
-### MikroTik não conecta / credenciais inválidas / REST desabilitada
-
-Na Fase 1 isso é esperado se `MIKROTIK_MOCK_MODE=false`, pois a integração REST ainda não está habilitada. Para a Fase 2, confira serviço `www-ssl`, usuário com `rest-api`, endereço permitido no serviço/usuário e a documentação de preparação.
-
-### Certificado SSL self-signed
-
-O padrão é `MIKROTIK_VERIFY_SSL=true`. Prefira confiar na CA localmente. Somente em ambiente de desenvolvimento controlado, com certificado self-signed ainda não confiável, use `MIKROTIK_VERIFY_SSL=false`; essa exceção será isolada no futuro cliente HTTP do RouterOS, nunca aplicada globalmente.
-
-### Dispositivo não aparece
-
-No mock mode, os dados já são fornecidos. Em RouterOS real (Fase 2), o dispositivo precisará aparecer como lease DHCP e ser correlacionável ao DHCP server/interface ou CIDR cadastrado. Dispositivos com IP estático ou atrás de NAT do cliente exigirão análise adicional.
-
-### Queue não limita velocidade / FastTrack
-
-Ainda não há queues reais nesta fase. Na Fase 5, FastTrack será diagnosticado porque pode contornar Simple Queues; nenhuma regra existente será desabilitada automaticamente.
-
-## Próximo passo
-
-Fase 2: implementar e validar o adaptador REST **somente leitura** contra RouterOS 7 — status, interfaces, DHCP servers e leases — antes de liberar qualquer escrita no equipamento.
+Physical RouterOS validation: **not performed in this workspace.**

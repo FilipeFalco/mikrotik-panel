@@ -8,6 +8,7 @@ public record GatewayConnectionStatus(
         String routerOsVersion,
         Long latencyMillis,
         String message,
+        boolean readOnly,
         boolean fastTrackDetected
 ) {
 }

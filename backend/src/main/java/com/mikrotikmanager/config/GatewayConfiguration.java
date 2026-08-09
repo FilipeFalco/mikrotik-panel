@@ -2,7 +2,7 @@ package com.mikrotikmanager.config;
 
 import com.mikrotikmanager.gateway.MikrotikGateway;
 import com.mikrotikmanager.gateway.MockMikrotikGateway;
-import com.mikrotikmanager.gateway.UnavailableMikrotikGateway;
+import com.mikrotikmanager.gateway.routeros.RouterOsRestGateway;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -20,9 +20,7 @@ class GatewayConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "mikrotik.mock-mode", havingValue = "false")
-    MikrotikGateway unavailableMikrotikGateway(MikrotikProperties properties) {
-        // The RouterOS REST implementation intentionally starts in Phase 2.
-        // This keeps Phase 1 incapable of changing a real router.
-        return new UnavailableMikrotikGateway(properties.host(), properties.port());
+    MikrotikGateway routerOsRestGateway(MikrotikProperties properties) {
+        return new RouterOsRestGateway(properties);
     }
 }

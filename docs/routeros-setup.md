@@ -1,88 +1,201 @@
-# Preparação manual do RouterOS
+# Preparação manual do RouterOS para a Fase 2
 
-> Estado desta entrega: a Fase 1 funciona exclusivamente em mock mode. Não aplique alterações de produção apenas para esta fase. Este guia prepara uma futura validação controlada da Fase 2 e não é executado automaticamente pela aplicação.
+Esta etapa prepara manualmente acesso REST restrito para o backend local. A
+aplicação da Fase 2 não modifica RouterOS: depois desta preparação ela emite
+somente HTTPS `GET` para `/rest`.
+
+Antes de futuras fases de escrita, mantenha um backup/export atualizado do
+RouterOS. Mesmo sendo leitura nesta fase, a preparação de serviço, certificado
+e usuário é uma alteração administrativa feita conscientemente pelo operador.
 
 ## 1. Pré-requisitos
 
-- RouterOS 7 atualizado e backup exportado antes de qualquer mudança.
-- Um IP estável para o computador que executa o backend.
-- A topologia deve permitir que o MikroTik enxergue os dispositivos finais (AP/roteador em bridge quando aplicável).
-- DHCP Server configurado por rede/interface que se deseja administrar.
+- RouterOS 7 e um IP estável para o computador que executa o backend;
+- DHCP servers já configurados nas interfaces/redes que se pretende observar;
+- certificado para `www-ssl`, preferencialmente emitido por uma CA confiável
+  pelo computador local;
+- acesso administrativo separado para realizar apenas a preparação abaixo.
 
-## 2. Habilitar REST de modo restrito
+O RouterOS expõe REST por `www-ssl` (HTTPS) ou `www` (HTTP). Use somente
+`www-ssl`: a documentação alerta que HTTP permite interceptação passiva das
+credenciais Basic. [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
-A REST API é disponibilizada pelo serviço `www-ssl` (HTTPS) ou `www` (HTTP). Use `www-ssl`; HTTP deixa credenciais Basic expostas no tráfego. [Documentação REST oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+## 2. Habilitar `www-ssl` de forma restrita
 
-Substitua `192.168.88.10` pelo IP do computador local que roda o backend e `mtmgr-cert` pelo certificado já criado/importado no RouterOS:
+Substitua `192.168.88.10` pelo IP do computador local e `mtmgr-cert` pelo nome
+do certificado já criado/importado no RouterOS:
 
 ```routeros
 /ip/service/set www-ssl disabled=no port=443 address=192.168.88.10/32 certificate=mtmgr-cert
 ```
 
-Não abra o serviço para `0.0.0.0/0`. A propriedade `address` de `/ip service` restringe quais endereços podem usar o serviço. [IP Services oficial](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
+Não habilite `www` para esta aplicação. Restrinja também o firewall da sua
+topologia conforme necessário; `address` em `/ip/service` limita as origens
+aceitas pelo serviço, mas a documentação recomenda firewall para bloquear redes
+externas/não confiáveis. `www-ssl` usa o certificado indicado no serviço.
+[Services oficial](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
 
-O padrão é `MIKROTIK_VERIFY_SSL=true`. Se usar certificado self-signed, prefira importar a CA no computador. A opção `MIKROTIK_VERIFY_SSL=false` existe somente para desenvolvimento local controlado, quando o certificado ainda não for confiável, e será aplicada isoladamente ao futuro cliente RouterOS.
+Confirme que a REST API segura está disponível na versão RouterOS em uso. O
+RouterOS documenta `rest-secure` como suporte REST para o web service seguro.
 
-## 3. Criar usuário dedicado
+## 3. Criar um usuário de leitura dedicado
 
-Não use `admin`. Para a fase de leitura, comece com um grupo limitado a `read,rest-api`:
+Não use `admin` e não reutilize usuário de operação. Crie grupo específico com
+as policies mínimas `read,rest-api` e sem `write`:
 
 ```routeros
 /user/group/add name=mtmgr-read policy=read,rest-api
-/user/add name=mtmgr group=mtmgr-read address=192.168.88.10/32 password=<gere-uma-senha-forte>
+/user/add name=mtmgr group=mtmgr-read address=192.168.88.10/32 password=<senha-local-forte>
 ```
 
-Quando as fases de bloqueio e queues tiverem sido testadas no seu equipamento, o grupo precisará também de `write`, pois essas operações alteram recursos pertencentes ao aplicativo. Não conceda `policy`, `sensitive`, `reboot`, `password`, `ssh` ou `winbox` sem necessidade.
+Não conceda `write`, `policy`, `reboot`, `password`, `ssh`, `winbox`, `test`,
+`sniff` ou `sensitive` para a Fase 2. A documentação explica que `read` permite
+consulta da configuração e `rest-api` permite REST; `write` concede alteração.
+Ela também recomenda grupo customizado, pois o grupo padrão `read` inclui mais
+policies do que esta aplicação precisa. A restrição `address` do usuário reduz
+as origens que podem autenticar. [Users e policies oficiais](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 
-O RouterOS documenta as policies `read`, `write` e `rest-api`, bem como a restrição de endereço por usuário. [Users e policies oficiais](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+Guarde a senha apenas no arquivo local `.env`; não a copie para documentação,
+SQLite, frontend, log ou Git.
 
-## 4. Configurar o backend
+## 4. Certificado e TLS
 
-Copie `.env.example` para `.env`, preencha os valores e mantenha `MIKROTIK_MOCK_MODE=true` para esta entrega. Não coloque o arquivo no Git.
+O padrão da aplicação é:
+
+```dotenv
+MIKROTIK_VERIFY_SSL=true
+```
+
+Com esse valor, o backend valida a cadeia e o hostname/IP do certificado. Para
+certificado self-signed, a CA ou o certificado precisa ser confiável pelo
+truststore da JVM/JDK que executa o backend. Em uma instalação Java padrão,
+isso normalmente corresponde ao `cacerts` do JDK/JRE usado pelo processo; o
+repositório de certificados do navegador ou do sistema operacional, sozinho,
+não necessariamente é usado pelo Apache HttpClient da aplicação. Outra
+estratégia de implantação é iniciar a JVM com um truststore explicitamente
+configurado. Não há truststore customizado configurável pela aplicação nesta
+fase. Essa orientação mantém `MIKROTIK_VERIFY_SSL=true` e a validação normal de
+cadeia e hostname/IP.
+
+`MIKROTIK_VERIFY_SSL=false` existe somente para desenvolvimento local
+controlado, quando um self-signed ainda não é confiável. Ele mantém HTTPS, mas
+desabilita a verificação somente no `RouterOsRestClient` dedicado. Não use isso
+em rede não confiável e não trate como configuração de produção. A exceção não
+é global à JVM nem altera outros clientes HTTP.
+
+## 5. Configurar o backend
+
+Na raiz do repositório:
+
+```bash
+cp .env.example .env
+```
+
+Preencha apenas o arquivo `.env` local:
 
 ```dotenv
 MIKROTIK_HOST=192.168.88.1
 MIKROTIK_PORT=443
 MIKROTIK_USERNAME=mtmgr
-MIKROTIK_PASSWORD=uma-senha-forte
+MIKROTIK_PASSWORD=<senha-local-forte>
 MIKROTIK_VERIFY_SSL=true
-MIKROTIK_MOCK_MODE=true
+MIKROTIK_CONNECT_TIMEOUT_MS=3000
+MIKROTIK_READ_TIMEOUT_MS=5000
+MIKROTIK_MOCK_MODE=false
 MIKROTIK_WRITE_ENABLED=false
 ```
 
-`MIKROTIK_WRITE_ENABLED=false` é o padrão e é o kill switch para a futura integração real. O mock mode continua permitindo as mutações simuladas da UI, porque elas existem apenas em memória. Em contraste, com `MIKROTIK_MOCK_MODE=false` e `MIKROTIK_WRITE_ENABLED=false`, somente operações que alterariam o RouterOS são recusadas antes do gateway; nomes amigáveis, observações e configurações locais de portas continuam editáveis no SQLite.
+Os timeouts devem ser positivos. Três segundos de conexão e cinco segundos de
+resposta são os padrões de rede local. A aplicação monta internamente
+`https://<host>:<port>` e o frontend não pode fornecer URL, credenciais ou
+headers RouterOS.
 
-Na Fase 1, não mude `MIKROTIK_MOCK_MODE=false` para tentar integrar o equipamento: ainda não existe `RouterOsRestGateway` funcional, não há chamadas a `/rest` e o gateway indisponível não acessa a rede. Em uma futura Fase 2, essa variável será usada somente para validar chamadas de leitura; essa fase não modificará a configuração RouterOS.
+## 6. Testar conexão sem escrever
 
-## 5. DHCP e associação com portas
+Inicie backend e frontend como descrito no [README](../README.md), abra
+Configurações e use **Testar conexão**. O endpoint da aplicação pode ser `POST`
+local, mas a chamada correspondente ao RouterOS é apenas
+`GET /rest/system/resource`.
 
-Verifique manualmente que cada DHCP server possui a interface/rede esperada:
+Com conexão bem-sucedida, a topbar mostra RouterOS 7.x e modo somente leitura.
+Falhas de autenticação, TLS, rede e payload retornam mensagens sanitizadas; elas
+não interrompem SQLite, histórico ou configurações locais.
+
+Durante a Fase 2, os únicos recursos RouterOS lidos são:
+
+```text
+GET /rest/system/resource
+GET /rest/interface
+GET /rest/ip/dhcp-server
+GET /rest/ip/dhcp-server/lease
+GET /rest/queue/simple
+GET /rest/ip/firewall/filter
+```
+
+Não use `POST`, `PUT`, `PATCH` ou `DELETE` para testes desta integração. As
+leituras de firewall/FastTrack ocorrem apenas no diagnóstico sob demanda, não a
+cada polling.
+
+## 7. Conferir DHCP e configurar metadados locais das portas
+
+Para checagem manual, sem alterar nada:
 
 ```routeros
 /ip/dhcp-server/print detail
 /ip/dhcp-server/lease/print detail
 ```
 
-Cadastre no painel o nome da interface, a rede CIDR e — quando necessário — o nome do DHCP server. A rede deve usar um IP literal, nunca hostname; `10.10.10.17/24` será normalizado e persistido como `10.10.10.0/24`. O adaptador real correlacionará lease → DHCP server → interface e usará CIDR como conferência, não um nome hardcoded.
+O painel correlaciona `lease.server` → `dhcp-server.name` →
+`dhcp-server.interface`. Cadastre CIDR e preferências de porta no SQLite apenas
+como configuração local; o CIDR não substitui uma associação DHCP confiável.
+Lease sem MAC utilizável ou sem server correspondente é ignorado isoladamente,
+sem impedir que os outros dispositivos apareçam. [DHCP oficial](https://manual.mikrotik.com/docs/network-management/dhcp/)
 
-## 6. FastTrack e queues (não altere ainda)
+Em **Configurações → Interfaces descobertas**, uma interface apresentada no
+fluxo de portas e ainda não cadastrada localmente aparece como não gerenciada.
+O operador pode selecionar a interface e salvar nome amigável, descrição, CIDR,
+DHCP server, visibilidade e papel `WAN` ou `CLIENT`. A interface física é
+somente leitura nessa tela: esses dados ficam exclusivamente no SQLite e
+alimentam o dashboard. O request é `PUT /api/ports/{interface}` para o backend
+local; ele não envia `PUT` ao RouterOS.
 
-Antes de qualquer controle de banda, inspecione as regras FastTrack existentes:
+O papel `WAN` define qual interface o dashboard apresenta como Internet, e
+`CLIENT` identifica as portas de cliente habilitadas. Não existe a regra de que
+`ether1` seja WAN: ele é apenas a escolha declarada pelo fixture de mock. Mudar
+o papel local não altera rota padrão, NAT, DHCP client, firewall ou interface
+list no equipamento.
 
-```routeros
-/ip/firewall/filter/print detail where action=fasttrack-connection
-/queue/simple/print detail
-```
+## 8. Queues e FastTrack: observar, não alterar
 
-Não desabilite, mova ou apague regras por causa deste aplicativo. FastTrack pode contornar Simple Queues, por isso a Fase 5 mostrará um aviso e exigirá validação explícita da regra e da topologia. [Queues](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/) e [Packet Flow](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/) oficiais.
+Os diagnósticos podem ler Simple Queues e firewall filters. Eles não criam,
+adotam, alteram, removem, movem ou reordenam queues, leases ou regras. Uma queue
+manual só é considerada gerenciada se o comentário for exatamente
+`MTMGR:PORT:<interface>`.
 
-## 7. Recursos que serão gerenciados no futuro
+FastTrack ativo é reportado porque pode contornar Simple Queues. Não desabilite
+nem mova a regra por causa desta fase; avalie manualmente a topologia antes de
+qualquer fase futura de limite. [Queues](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
+e [Packet Flow](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+oficiais.
 
-Quando cada recurso for criado pela aplicação, ele terá comentário identificável:
+## 9. O que permanece fora do escopo
 
-```text
-MTMGR:PORT:ether2
-MTMGR:DEVICE:AA-BB-CC-DD-EE-FF
-```
+Mesmo se `MIKROTIK_WRITE_ENABLED=true` for definido por engano, a Fase 2 não
+implementa escrita RouterOS. Não há bloqueio real, alteração de velocidade,
+`make-static`, queue creation/update/removal, mudança de FastTrack, firewall,
+bridge, IP, DHCP, NAT, rota, VLAN, DNS ou interface.
 
-O aplicativo só atualizará/removerá recursos cujo comentário confirme exatamente essa propriedade: o MAC ou a interface precisam corresponder ao valor no comentário. Um `MTMGR:` genérico, MAC de outro dispositivo ou outra porta não é suficiente. Regras, queues, NAT, bridges, rotas e leases existentes que não tenham esse identificador não serão alterados.
+`MIKROTIK_MOCK_MODE=true` continua totalmente local e não precisa de rede. Em
+modo real, nomes amigáveis, observações e configuração de portas no SQLite
+continuam permitidos.
+
+Physical RouterOS validation: **not performed in this workspace.**
+
+## Fontes oficiais
+
+- [REST API — RouterOS Manual](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+- [Services — RouterOS Manual](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
+- [User — RouterOS Manual](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+- [DHCP — RouterOS Manual](https://manual.mikrotik.com/docs/network-management/dhcp/)
+- [Queues — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
+- [Packet Flow in RouterOS — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)

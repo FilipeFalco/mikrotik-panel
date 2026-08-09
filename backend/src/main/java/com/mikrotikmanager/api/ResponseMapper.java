@@ -18,7 +18,7 @@ final class ResponseMapper {
 
     static SystemStatusResponse systemStatus(GatewayConnectionStatus status) {
         return new SystemStatusResponse(status.connected(), status.mockMode(), status.host(), status.port(),
-                status.routerOsVersion(), status.latencyMillis(), status.message(), status.fastTrackDetected());
+                status.routerOsVersion(), status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected());
     }
 
     static DeviceResponse device(DeviceView view) {
@@ -46,7 +46,8 @@ final class ResponseMapper {
         return new PortResponse(
                 routerInterface.name(), view.friendlyName(), configuration == null ? null : configuration.description(),
                 configuration == null ? null : configuration.network(), configuration == null ? null : configuration.dhcpServer(),
-                configuration != null, view.enabled(), routerInterface.running(), routerInterface.disabled(), devices.size(), online, blocked,
+                configuration != null, configuration == null ? null : configuration.role(), view.enabled(),
+                routerInterface.running(), routerInterface.disabled(), devices.size(), online, blocked,
                 view.speedLimit().downloadBps(), view.speedLimit().uploadBps(), routerInterface.traffic().downloadBps(),
                 routerInterface.traffic().uploadBps(), devices);
     }

@@ -9,6 +9,7 @@ public record ManagedPort(
         String description,
         String network,
         String dhcpServer,
+        ManagedPortRole role,
         boolean enabled,
         Instant createdAt,
         Instant updatedAt

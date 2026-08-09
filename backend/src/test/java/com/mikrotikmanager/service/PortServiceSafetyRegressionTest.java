@@ -2,6 +2,7 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.ManagedPortRole;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.domain.TrafficRate;
@@ -64,7 +65,9 @@ class PortServiceSafetyRegressionTest {
         service.updateConfiguration("ether2", "Clientes", "Configuração local", "10.10.10.0/24",
                 "dhcp-clientes", true);
 
-        verify(portRepository).save(any(ManagedPort.class));
+        ArgumentCaptor<ManagedPort> savedPort = ArgumentCaptor.forClass(ManagedPort.class);
+        verify(portRepository).save(savedPort.capture());
+        assertThat(savedPort.getValue().role()).isEqualTo(ManagedPortRole.CLIENT);
         verify(gateway).listInterfaces();
         verifyNoMoreInteractions(gateway);
     }

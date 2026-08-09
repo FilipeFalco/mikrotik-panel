@@ -1,5 +1,8 @@
 package com.mikrotikmanager.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.mikrotikmanager.domain.ManagedPortRole;
+
 import java.util.List;
 
 public record PortResponse(
@@ -9,6 +12,8 @@ public record PortResponse(
         String network,
         String dhcpServer,
         boolean managed,
+        @JsonInclude(JsonInclude.Include.ALWAYS)
+        ManagedPortRole role,
         boolean enabled,
         boolean running,
         boolean disabled,
