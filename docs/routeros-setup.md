@@ -67,15 +67,21 @@ MIKROTIK_VERIFY_SSL=true
 ```
 
 Com esse valor, o backend valida a cadeia e o hostname/IP do certificado. Para
-certificado self-signed, o caminho preferido é importar a CA no repositório de
-confiança do computador que executa o backend. Essa é a recomendação da
-documentação REST oficial.
+certificado self-signed, a CA ou o certificado precisa ser confiável pelo
+truststore da JVM/JDK que executa o backend. Em uma instalação Java padrão,
+isso normalmente corresponde ao `cacerts` do JDK/JRE usado pelo processo; o
+repositório de certificados do navegador ou do sistema operacional, sozinho,
+não necessariamente é usado pelo Apache HttpClient da aplicação. Outra
+estratégia de implantação é iniciar a JVM com um truststore explicitamente
+configurado. Não há truststore customizado configurável pela aplicação nesta
+fase. Essa orientação mantém `MIKROTIK_VERIFY_SSL=true` e a validação normal de
+cadeia e hostname/IP.
 
 `MIKROTIK_VERIFY_SSL=false` existe somente para desenvolvimento local
 controlado, quando um self-signed ainda não é confiável. Ele mantém HTTPS, mas
-desabilita a verificação no cliente RouterOS dedicado. Não use isso em rede não
-confiável e não trate como configuração de produção. A exceção não é global à
-JVM nem altera outros clientes HTTP.
+desabilita a verificação somente no `RouterOsRestClient` dedicado. Não use isso
+em rede não confiável e não trate como configuração de produção. A exceção não
+é global à JVM nem altera outros clientes HTTP.
 
 ## 5. Configurar o backend
 
@@ -130,7 +136,7 @@ Não use `POST`, `PUT`, `PATCH` ou `DELETE` para testes desta integração. As
 leituras de firewall/FastTrack ocorrem apenas no diagnóstico sob demanda, não a
 cada polling.
 
-## 7. Conferir DHCP e portas
+## 7. Conferir DHCP e configurar metadados locais das portas
 
 Para checagem manual, sem alterar nada:
 
@@ -144,6 +150,20 @@ O painel correlaciona `lease.server` → `dhcp-server.name` →
 como configuração local; o CIDR não substitui uma associação DHCP confiável.
 Lease sem MAC utilizável ou sem server correspondente é ignorado isoladamente,
 sem impedir que os outros dispositivos apareçam. [DHCP oficial](https://manual.mikrotik.com/docs/network-management/dhcp/)
+
+Em **Configurações → Interfaces descobertas**, uma interface apresentada no
+fluxo de portas e ainda não cadastrada localmente aparece como não gerenciada.
+O operador pode selecionar a interface e salvar nome amigável, descrição, CIDR,
+DHCP server, visibilidade e papel `WAN` ou `CLIENT`. A interface física é
+somente leitura nessa tela: esses dados ficam exclusivamente no SQLite e
+alimentam o dashboard. O request é `PUT /api/ports/{interface}` para o backend
+local; ele não envia `PUT` ao RouterOS.
+
+O papel `WAN` define qual interface o dashboard apresenta como Internet, e
+`CLIENT` identifica as portas de cliente habilitadas. Não existe a regra de que
+`ether1` seja WAN: ele é apenas a escolha declarada pelo fixture de mock. Mudar
+o papel local não altera rota padrão, NAT, DHCP client, firewall ou interface
+list no equipamento.
 
 ## 8. Queues e FastTrack: observar, não alterar
 

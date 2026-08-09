@@ -1,4 +1,5 @@
 export type DeviceStatus = 'ONLINE' | 'OFFLINE' | 'BLOCKED' | 'UNKNOWN';
+export type PortRole = 'WAN' | 'CLIENT';
 
 export interface SystemStatus {
   connected: boolean;
@@ -38,6 +39,8 @@ export interface Port {
   description?: string | null;
   network?: string | null;
   dhcpServer?: string | null;
+  /** Local presentation metadata. A null value means the interface was only discovered. */
+  role: PortRole | null;
   managed: boolean;
   enabled: boolean;
   running: boolean;

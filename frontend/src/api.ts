@@ -1,4 +1,4 @@
-import type { ApiErrorBody, AuditLog, Device, Diagnostics, Port, SystemStatus } from './types';
+import type { ApiErrorBody, AuditLog, Device, Diagnostics, Port, PortRole, SystemStatus } from './types';
 
 export class ApiError extends Error {
   readonly code: string;
@@ -35,6 +35,25 @@ export const api = {
   diagnostics: () => request<Diagnostics>('/api/diagnostics'),
   ports: () => request<Port[]>('/api/ports'),
   port: (interfaceName: string) => request<Port>(`/api/ports/${encoded(interfaceName)}`),
+  updatePort: (
+    interfaceName: string,
+    friendlyName: string,
+    description: string,
+    network: string,
+    dhcpServer: string,
+    enabled: boolean,
+    role?: PortRole | null,
+  ) => request<Port>(`/api/ports/${encoded(interfaceName)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      friendlyName,
+      description,
+      network,
+      dhcpServer,
+      enabled,
+      ...(role === undefined ? {} : { role }),
+    }),
+  }),
   devices: () => request<Device[]>('/api/devices'),
   audit: () => request<AuditLog[]>('/api/audit'),
   updatePortSpeed: (interfaceName: string, downloadBps: number, uploadBps: number) =>

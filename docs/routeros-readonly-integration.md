@@ -35,8 +35,8 @@ restritivo que a própria REST API, que documenta esses verbos para comandos e
 CRUD. [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
 SQLite continua editável localmente: nome amigável e observações do dispositivo,
-nome/descrição/CIDR/DHCP server/visibilidade da porta e auditoria local. Esses
-dados não são enviados ao RouterOS.
+nome/descrição/CIDR/DHCP server/visibilidade/papel `WAN` ou `CLIENT` da porta e
+auditoria local. Esses dados não são enviados ao RouterOS.
 
 ## Arquitetura
 
@@ -100,9 +100,13 @@ log operacional, quando necessário, limita-se a método, path, status e duraç�
 | `MIKROTIK_READ_TIMEOUT_MS` | `5000` | limite de resposta de 5 s; deve ser positivo |
 
 Com `MIKROTIK_VERIFY_SSL=true`, use certificado confiável e cujo nome/IP seja
-compatível com `MIKROTIK_HOST`. A orientação oficial para certificados
-self-signed é importar a CA no repositório confiável do cliente.
-[REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+compatível com `MIKROTIK_HOST`. A validação confia no truststore da JVM que
+executa o backend; em uma instalação Java padrão, ele normalmente é o
+`cacerts` do JDK/JRE em uso. Assim, confiar em uma CA apenas no navegador ou no
+sistema operacional pode não bastar: a CA/certificado precisa ser confiável
+pelo processo Java. Uma alternativa de implantação é iniciar a JVM com um
+truststore explicitamente configurado. Não há configuração de truststore própria
+da aplicação nesta fase. [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
 `MIKROTIK_VERIFY_SSL=false` é uma exceção exclusiva para desenvolvimento local
 controlado com certificado self-signed ainda não confiável. Ela enfraquece
@@ -116,8 +120,16 @@ rede não confiável.
 
 As interfaces vêm de `/rest/interface`; nenhuma suposição é feita sobre nomes
 ou quantidade de portas. A aplicação decide quais interfaces Ethernet aparecem
-no painel e quais são localmente gerenciadas. Interfaces descobertas podem
+no painel e quais são localmente gerenciadas. Interfaces Ethernet descobertas podem
 existir sem `ManagedPort` e aparecem em Configurações.
+
+Ao configurar uma interface descoberta, o operador persiste no SQLite o nome,
+descrição, CIDR, DHCP server, visibilidade e papel local `WAN` ou `CLIENT` por
+`PUT /api/ports/{interface}`. Isso não renomeia a interface física nem altera
+rota, NAT, DHCP client, firewall ou interface list no RouterOS. Em particular,
+o dashboard não deduz WAN de `ether1`: ele usa o papel local `WAN`; qualquer
+interface descoberta suportada pode ser escolhida. O mock pode atribuir WAN a
+`ether1` como dado de fixture, sem criar uma regra no produto.
 
 Os contadores cumulativos de bytes não são rotulados como Mbps. A Fase 2 retorna
 `TrafficRate.UNAVAILABLE` porque um monitor de tráfego contínuo exigiria um
@@ -212,7 +224,7 @@ vazia é sucesso.
 | Configuração | Resultado |
 | --- | --- |
 | `MIKROTIK_MOCK_MODE=true` | dados em memória; nenhuma rede RouterOS; mutações continuam simuladas para desenvolvimento |
-| `MIKROTIK_MOCK_MODE=false`, `MIKROTIK_WRITE_ENABLED=false` | dados reais somente leitura por HTTPS GET; SQLite local permanece editável |
+| `MIKROTIK_MOCK_MODE=false`, `MIKROTIK_WRITE_ENABLED=false` | dados reais somente leitura por HTTPS GET; SQLite local (incluindo configuração e papel da porta) permanece editável |
 | `MIKROTIK_MOCK_MODE=false`, `MIKROTIK_WRITE_ENABLED=true` | ainda não existe escrita RouterOS na Fase 2; métodos mutáveis falham antes da rede |
 
 Fora do escopo desta fase:

@@ -3,6 +3,7 @@ package com.mikrotikmanager;
 import com.mikrotikmanager.gateway.MikrotikGateway;
 import com.mikrotikmanager.gateway.MockMikrotikGateway;
 import com.mikrotikmanager.persistence.ManagedDeviceRepository;
+import com.mikrotikmanager.persistence.ManagedPortRepository;
 import com.mikrotikmanager.service.DeviceService;
 import com.mikrotikmanager.service.PortService;
 import com.zaxxer.hikari.HikariDataSource;
@@ -49,6 +50,9 @@ class MikrotikManagerApplicationIntegrationTest {
     private ManagedDeviceRepository managedDeviceRepository;
 
     @Autowired
+    private ManagedPortRepository managedPortRepository;
+
+    @Autowired
     private MikrotikGateway mikrotikGateway;
 
     @Autowired
@@ -78,6 +82,13 @@ class MikrotikManagerApplicationIntegrationTest {
                 SELECT COUNT(*) FROM sqlite_master
                 WHERE type = 'table' AND name IN ('managed_port', 'managed_device', 'audit_log')
                 """, Integer.class)).isEqualTo(3);
+        assertThat(jdbcTemplate.queryForList("PRAGMA table_info(managed_port)").stream()
+                .map(column -> (String) column.get("name")))
+                .contains("role");
+        assertThat(managedPortRepository.findByInterfaceName("ether1"))
+                .hasValueSatisfying(port -> assertThat(port.role().name()).isEqualTo("WAN"));
+        assertThat(managedPortRepository.findByInterfaceName("ether2"))
+                .hasValueSatisfying(port -> assertThat(port.role().name()).isEqualTo("CLIENT"));
 
         managedDeviceRepository.save("AA:BB:CC:DD:FE:01", "Dispositivo de integração", "SQLite temporário");
 

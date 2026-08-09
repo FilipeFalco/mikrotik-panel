@@ -3,6 +3,7 @@ package com.mikrotikmanager.service;
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.DeviceStatus;
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.ManagedPortRole;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.domain.TrafficRate;
@@ -129,7 +130,8 @@ class DeviceServiceTest {
 
     private ManagedPort port(String interfaceName, long download, long upload) {
         Instant now = Instant.now();
-        return new ManagedPort(1, interfaceName, "Cliente", "", "10.10.10.0/24", "dhcp", true, now, now);
+        return new ManagedPort(1, interfaceName, "Cliente", "", "10.10.10.0/24", "dhcp", ManagedPortRole.CLIENT,
+                true, now, now);
     }
 
     private RouterDevice routerDevice(String macAddress) {

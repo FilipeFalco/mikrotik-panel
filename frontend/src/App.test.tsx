@@ -29,6 +29,7 @@ const ports: Port[] = [{
   description: null,
   network: '10.10.10.0/24',
   dhcpServer: 'dhcp-clientes',
+  role: 'CLIENT',
   managed: true,
   enabled: true,
   running: true,
@@ -126,5 +127,78 @@ it('recovers from offline to online and starts loading router data from ports', 
   expect(await screen.findByText('RouterOS 7.16.2 · Somente leitura')).toBeInTheDocument();
   await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/ports')).toHaveLength(1));
   expect(screen.queryByRole('heading', { name: 'MikroTik desconectado' })).not.toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(0);
+});
+
+it('saves a discovered interface locally and refreshes the dashboard without a browser reload', async () => {
+  let currentPorts: Port[] = [{
+    ...ports[0],
+    friendlyName: 'ether2',
+    description: null,
+    network: null,
+    dhcpServer: null,
+    role: null,
+    managed: false,
+    enabled: false,
+    devices: [],
+    deviceCount: 0,
+    onlineDeviceCount: 0,
+  }];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === '/api/system/status') return jsonResponse(connectedReadOnlyStatus);
+    if (String(input) === '/api/ports') return jsonResponse(currentPorts);
+    if (String(input) === '/api/diagnostics') {
+      return jsonResponse({ connected: true, routerOsVersion: '7.16.2', latencyMillis: 12, mockMode: false, fastTrackDetected: false, checks: [] });
+    }
+    if (String(input) === '/api/ports/ether2' && init?.method === 'PUT') {
+      currentPorts = [{
+        ...currentPorts[0],
+        friendlyName: 'Cliente João',
+        description: 'Casa João',
+        network: '10.10.10.0/24',
+        dhcpServer: 'dhcp-cliente1',
+        role: 'CLIENT',
+        managed: true,
+        enabled: true,
+      }];
+      return jsonResponse(currentPorts[0]);
+    }
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  await screen.findByRole('heading', { name: 'Dashboard' });
+  fireEvent.click(screen.getByRole('button', { name: 'Configurações' }));
+  await screen.findByRole('heading', { name: 'Interfaces descobertas' });
+  fireEvent.click(screen.getByRole('button', { name: 'Configurar' }));
+
+  expect(screen.getByRole('button', { name: 'Salvar configuração local' })).toBeEnabled();
+  fireEvent.change(screen.getByLabelText('Nome amigável'), { target: { value: 'Cliente João' } });
+  fireEvent.change(screen.getByLabelText('Descrição'), { target: { value: 'Casa João' } });
+  fireEvent.change(screen.getByLabelText('Rede/CIDR'), { target: { value: '10.10.10.17/24' } });
+  fireEvent.change(screen.getByLabelText('DHCP Server'), { target: { value: 'dhcp-cliente1' } });
+  fireEvent.click(screen.getByLabelText('Exibir no dashboard'));
+  fireEvent.click(screen.getByRole('button', { name: 'Salvar configuração local' }));
+
+  await waitFor(() => {
+    const putCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input) === '/api/ports/ether2' && (init as RequestInit | undefined)?.method === 'PUT',
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse((putCall?.[1] as RequestInit).body as string)).toEqual({
+      friendlyName: 'Cliente João',
+      description: 'Casa João',
+      network: '10.10.10.17/24',
+      dhcpServer: 'dhcp-cliente1',
+      enabled: true,
+      role: 'CLIENT',
+    });
+  });
+  expect(screen.getByLabelText('Rede/CIDR')).toHaveValue('10.10.10.0/24');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+  expect(await screen.findByText('Cliente João')).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).toHaveLength(0);
 });

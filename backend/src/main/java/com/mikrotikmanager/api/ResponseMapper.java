@@ -46,7 +46,8 @@ final class ResponseMapper {
         return new PortResponse(
                 routerInterface.name(), view.friendlyName(), configuration == null ? null : configuration.description(),
                 configuration == null ? null : configuration.network(), configuration == null ? null : configuration.dhcpServer(),
-                configuration != null, view.enabled(), routerInterface.running(), routerInterface.disabled(), devices.size(), online, blocked,
+                configuration != null, configuration == null ? null : configuration.role(), view.enabled(),
+                routerInterface.running(), routerInterface.disabled(), devices.size(), online, blocked,
                 view.speedLimit().downloadBps(), view.speedLimit().uploadBps(), routerInterface.traffic().downloadBps(),
                 routerInterface.traffic().uploadBps(), devices);
     }

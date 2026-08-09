@@ -1,6 +1,7 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.ManagedPortRole;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.SpeedLimit;
@@ -12,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -70,21 +72,39 @@ public class PortService {
 
     public ManagedPort updateConfiguration(String interfaceName, String friendlyName, String description, String network,
                                            String dhcpServer, boolean enabled) {
+        return updateConfiguration(interfaceName, friendlyName, description, network, dhcpServer, enabled, null).managedPort();
+    }
+
+    /**
+     * Persists local panel metadata for an interface. The only RouterOS access
+     * is a GET-backed existence check; role changes do not change RouterOS.
+     */
+    @Transactional
+    public PortView updateConfiguration(String interfaceName, String friendlyName, String description, String network,
+                                        String dhcpServer, boolean enabled, ManagedPortRole requestedRole) {
         if (!CidrValidator.isValid(network)) {
             throw new ApiException(ApiErrorCode.INVALID_INPUT, HttpStatus.BAD_REQUEST,
                     "A rede deve estar no formato CIDR, por exemplo 10.10.10.0/24.");
         }
         String normalizedNetwork = CidrValidator.normalize(network);
         return lockManager.withLock("port:" + interfaceName, () -> {
-            ensureInterfaceExists(interfaceName);
+            RouterInterface routerInterface = ensureInterfaceExists(interfaceName);
+            ManagedPort existing = managedPortRepository.findByInterfaceName(interfaceName).orElse(null);
+            ManagedPortRole effectiveRole = requestedRole != null
+                    ? requestedRole
+                    : existing == null ? ManagedPortRole.CLIENT : existing.role();
             ManagedPort requested = new ManagedPort(
-                    0, interfaceName, friendlyName.trim(), description, normalizedNetwork, dhcpServer, enabled, Instant.now(), Instant.now()
+                    0, interfaceName, friendlyName.trim(), description, normalizedNetwork, dhcpServer, effectiveRole,
+                    enabled, Instant.now(), Instant.now()
             );
             try {
                 ManagedPort saved = managedPortRepository.save(requested);
                 auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
                         "configuration", "configuration", true, null);
-                return saved;
+                // Do not call listDevices() or listPortSpeeds() here: a local
+                // PUT must not fan out into DHCP/queue RouterOS reads. The UI
+                // refreshes the regular port listing after this response.
+                return new PortView(routerInterface, saved, SpeedLimit.UNLIMITED, List.of());
             } catch (RuntimeException exception) {
                 auditService.record("PORT_CONFIGURATION_UPDATED", "PORT", interfaceName,
                         "configuration", "configuration", false, safeMessage(exception));
@@ -147,11 +167,12 @@ public class PortService {
         return device.hostname() == null || device.hostname().isBlank() ? device.macAddress() : device.hostname();
     }
 
-    private void ensureInterfaceExists(String interfaceName) {
-        boolean exists = gateway.listInterfaces().stream().map(RouterInterface::name).anyMatch(interfaceName::equals);
-        if (!exists) {
-            throw new ApiException(ApiErrorCode.PORT_NOT_FOUND, HttpStatus.NOT_FOUND, "Porta não encontrada no MikroTik.");
-        }
+    private RouterInterface ensureInterfaceExists(String interfaceName) {
+        return gateway.listInterfaces().stream()
+                .filter(routerInterface -> interfaceName.equals(routerInterface.name()))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(ApiErrorCode.PORT_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "Porta não encontrada no MikroTik."));
     }
 
     private void validateSpeed(SpeedLimit speedLimit) {

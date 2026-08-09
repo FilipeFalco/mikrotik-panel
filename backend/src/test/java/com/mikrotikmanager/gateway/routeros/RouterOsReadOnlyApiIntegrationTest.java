@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -133,6 +134,19 @@ class RouterOsReadOnlyApiIntegrationTest {
     }
 
     @Test
+    void exposesDiscoveredInterfacesAsUnmanagedUntilLocalMetadataIsSaved() throws Exception {
+        mockMvc.perform(get("/api/ports"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].interfaceName").value("ether2"))
+                .andExpect(jsonPath("$[0].managed").value(false))
+                .andExpect(jsonPath("$[0].enabled").value(false))
+                .andExpect(jsonPath("$[0].role").value(nullValue()));
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
     void persistsLocalDeviceAndPortUpdatesWhileRouterRequestsRemainGetOnly() throws Exception {
         mockMvc.perform(put("/api/devices/AA:BB:CC:DD:EE:01")
                         .contentType(APPLICATION_JSON)
@@ -143,6 +157,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.friendlyName").value("Galaxy local"))
                 .andExpect(jsonPath("$.notes").value("metadata local"));
 
+        ROUTER.clearRequests();
         mockMvc.perform(put("/api/ports/ether2")
                         .contentType(APPLICATION_JSON)
                         .content("""
@@ -151,18 +166,89 @@ class RouterOsReadOnlyApiIntegrationTest {
                                   "description":"Configuração SQLite",
                                   "network":"10.10.10.0/24",
                                   "dhcpServer":"dhcp-cliente1",
-                                  "enabled":true
+                                  "enabled":true,
+                                  "role":"CLIENT"
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.managed").value(true))
                 .andExpect(jsonPath("$.friendlyName").value("Clientes locais"))
-                .andExpect(jsonPath("$.network").value("10.10.10.0/24"));
+                .andExpect(jsonPath("$.network").value("10.10.10.0/24"))
+                .andExpect(jsonPath("$.role").value("CLIENT"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT role FROM managed_port WHERE interface_name = 'ether2'", String.class))
+                .isEqualTo("CLIENT");
+
+        // PUT persists local SQLite metadata and validates the discovered
+        // interface. It must not fan out into DHCP or queue RouterOS reads.
+        assertThat(ROUTER.requests()).singleElement().satisfies(request -> {
+            assertThat(request.method()).isEqualTo("GET");
+            assertThat(request.path()).isEqualTo(INTERFACES);
+        });
 
         mockMvc.perform(get("/api/devices"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].friendlyName").value("Galaxy local"));
 
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
+    void keepsOneLocalWanAndPreservesTheExistingRoleWhenRoleIsOmitted() throws Exception {
+        mockMvc.perform(put("/api/ports/ether5")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "friendlyName":"Link de backup",
+                                  "description":"Somente metadata local",
+                                  "network":"10.20.0.0/24",
+                                  "dhcpServer":"dhcp-backup",
+                                  "enabled":true,
+                                  "role":"WAN"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("WAN"));
+
+        // Older clients do not send role. A full local metadata update must
+        // keep its existing WAN role instead of silently changing it.
+        mockMvc.perform(put("/api/ports/ether5")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "friendlyName":"Link principal local",
+                                  "description":"Metadata atualizada",
+                                  "network":"10.20.0.0/24",
+                                  "dhcpServer":"dhcp-backup",
+                                  "enabled":true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("WAN"));
+
+        mockMvc.perform(put("/api/ports/ether2")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "friendlyName":"Novo link principal",
+                                  "description":"Metadata local",
+                                  "network":"10.10.10.0/24",
+                                  "dhcpServer":"dhcp-cliente1",
+                                  "enabled":true,
+                                  "role":"WAN"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("WAN"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT role FROM managed_port WHERE interface_name = 'ether2'", String.class))
+                .isEqualTo("WAN");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT role FROM managed_port WHERE interface_name = 'ether5'", String.class))
+                .isEqualTo("CLIENT");
         assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
                 assertThat(request.method()).isEqualTo("GET"));
     }
@@ -215,7 +301,10 @@ class RouterOsReadOnlyApiIntegrationTest {
                 [{".id":"*0","version":"7.18.2 (stable)","uptime":"2d3h","cpu-load":"17"}]
                 """);
         ROUTER.respondJson(INTERFACES, """
-                [{".id":"*2","name":"ether2","type":"ether","running":"true","disabled":"false"}]
+                [
+                  {".id":"*2","name":"ether2","type":"ether","running":"true","disabled":"false"},
+                  {".id":"*5","name":"ether5","type":"ether","running":"true","disabled":"false"}
+                ]
                 """);
         ROUTER.respondJson(DHCP_SERVERS, """
                 [{".id":"*11","name":"dhcp-cliente1","interface":"ether2","disabled":"false"}]

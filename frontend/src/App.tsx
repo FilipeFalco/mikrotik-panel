@@ -6,6 +6,7 @@ import { DeviceList } from './components/DeviceList';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { History } from './components/History';
 import { PortDetail } from './components/PortDetail';
+import type { LocalPortConfiguration } from './components/PortConfigurationEditor';
 import { Settings } from './components/Settings';
 import { StatusBadge } from './components/StatusBadge';
 import type { AuditLog, Device, Diagnostics, Port, SystemStatus } from './types';
@@ -68,6 +69,11 @@ export default function App() {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const applyRouterData = useCallback((nextPorts: Port[]) => {
+    setPorts(nextPorts);
+    setDevices(nextPorts.flatMap((port) => port.devices));
+  }, []);
+
   const refreshSystemStatus = useCallback(async (initial = false): Promise<SystemStatus | null> => {
     if (initial) setLoading(true);
     try {
@@ -87,13 +93,12 @@ export default function App() {
   const refreshRouterData = useCallback(async () => {
     try {
       const nextPorts = await api.ports();
-      setPorts(nextPorts);
-      setDevices(nextPorts.flatMap((port) => port.devices));
+      applyRouterData(nextPorts);
       setError(null);
     } catch (reason) {
       setError(errorMessage(reason, 'Não foi possível obter os dados do RouterOS.'));
     }
-  }, []);
+  }, [applyRouterData]);
 
   const refreshAudit = useCallback(async () => {
     try {
@@ -174,7 +179,59 @@ export default function App() {
     }
   };
 
+  // Mock mode keeps simulated controls available. This gates only actions that would target RouterOS.
+  const routerControlsReadOnly = Boolean(systemStatus && !systemStatus.mockMode && systemStatus.readOnly);
+
+  const savePortConfiguration = async (
+    interfaceName: string,
+    configuration: LocalPortConfiguration,
+  ): Promise<Port | null> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const updatedPort = await api.updatePort(
+        interfaceName,
+        configuration.friendlyName,
+        configuration.description,
+        configuration.network,
+        configuration.dhcpServer,
+        configuration.enabled,
+        configuration.role,
+      );
+
+      try {
+        const refreshedPorts = await api.ports();
+        applyRouterData(refreshedPorts);
+        return refreshedPorts.find((port) => port.interfaceName === updatedPort.interfaceName) ?? updatedPort;
+      } catch {
+        // Port PUT returns local metadata. Preserve the live RouterOS data until polling can refresh it.
+        const previousPort = ports.find((port) => port.interfaceName === updatedPort.interfaceName);
+        const fallbackPort = previousPort ? {
+          ...previousPort,
+          friendlyName: updatedPort.friendlyName,
+          description: updatedPort.description,
+          network: updatedPort.network,
+          dhcpServer: updatedPort.dhcpServer,
+          role: updatedPort.role,
+          managed: updatedPort.managed,
+          enabled: updatedPort.enabled,
+        } : updatedPort;
+        setPorts((currentPorts) => currentPorts.map((port) => {
+          if (port.interfaceName === updatedPort.interfaceName) return fallbackPort;
+          return updatedPort.role === 'WAN' && port.role === 'WAN' ? { ...port, role: 'CLIENT' } : port;
+        }));
+        return fallbackPort;
+      }
+    } catch (reason) {
+      setError(errorMessage(reason, 'A configuração local da porta não pôde ser salva.'));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const savePortSpeed = (port: Port, downloadBps: number, uploadBps: number) => {
+    if (routerControlsReadOnly) return;
     void runOperation(() => api.updatePortSpeed(port.interfaceName, downloadBps, uploadBps));
   };
 
@@ -183,14 +240,14 @@ export default function App() {
       if (friendlyName !== (device.friendlyName ?? '') || notes !== (device.notes ?? '')) {
         await api.updateDevice(device.macAddress, friendlyName, notes);
       }
-      if (downloadBps !== device.downloadLimitBps || uploadBps !== device.uploadLimitBps) {
+      if (!routerControlsReadOnly && (downloadBps !== device.downloadLimitBps || uploadBps !== device.uploadLimitBps)) {
         await api.updateDeviceSpeed(device.macAddress, downloadBps, uploadBps);
       }
     }, () => setSelectedDevice(null));
   };
 
   const confirmBlock = () => {
-    if (!confirmation) return;
+    if (!confirmation || routerControlsReadOnly) return;
     const { device, block } = confirmation;
     void runOperation(
       () => block ? api.blockDevice(device.macAddress) : api.unblockDevice(device.macAddress),
@@ -227,8 +284,8 @@ export default function App() {
     if (view === 'dashboard') return <Dashboard ports={ports} onManage={openPort} />;
     if (view === 'devices') return <div className="page-stack"><section className="page-heading"><div><p className="eyebrow">Todos os clientes</p><h1>Dispositivos</h1><p>Pesquise por nome, IP ou MAC e gerencie cada dispositivo.</p></div></section><DeviceList devices={devices} onSelect={setSelectedDevice} /></div>;
     if (view === 'history') return <History entries={audit} />;
-    if (view === 'settings') return <Settings systemStatus={systemStatus} diagnostics={diagnostics} ports={ports} testing={testing} onTestConnection={testConnection} onManagePort={openPort} />;
-    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} onSaveSpeed={savePortSpeed} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
+    if (view === 'settings') return <Settings systemStatus={systemStatus} diagnostics={diagnostics} ports={ports} testing={testing} saving={busy} onTestConnection={testConnection} onSavePort={savePortConfiguration} />;
+    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} readOnly={routerControlsReadOnly} onSaveSpeed={savePortSpeed} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
     return <div className="empty-state"><h2>Porta não encontrada</h2><button className="button primary" type="button" onClick={() => navigate('dashboard')}>Voltar ao dashboard</button></div>;
   };
 
@@ -246,7 +303,7 @@ export default function App() {
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>
-      <DeviceDetails device={selectedDevice} busy={busy} onClose={() => setSelectedDevice(null)} onSave={saveDevice} onRequestBlock={(device) => setConfirmation({ device, block: !device.blocked })} />
+      <DeviceDetails device={selectedDevice} busy={busy} readOnly={routerControlsReadOnly} onClose={() => setSelectedDevice(null)} onSave={saveDevice} onRequestBlock={(device) => !routerControlsReadOnly && setConfirmation({ device, block: !device.blocked })} />
       <ConfirmDialog open={Boolean(confirmation)} title={confirmation?.block ? `Bloquear ${confirmation.device.displayName}?` : `Liberar ${confirmation?.device.displayName ?? 'dispositivo'}?`} description={confirmation?.block ? 'O dispositivo perderá acesso à rede. Esta alteração é reversível.' : 'O acesso será liberado novamente para este dispositivo.'} confirmLabel={confirmation?.block ? 'Bloquear' : 'Liberar acesso'} busy={busy} onCancel={() => !busy && setConfirmation(null)} onConfirm={confirmBlock} />
     </div>
   );

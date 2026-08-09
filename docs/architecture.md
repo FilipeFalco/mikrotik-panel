@@ -15,7 +15,7 @@ React + Vite
         ▼
 Spring Boot (127.0.0.1)
  ├── SQLite + Flyway
- │   ├── managed_port: nome, descrição, CIDR, DHCP server, visibilidade
+ │   ├── managed_port: nome, descrição, CIDR, DHCP server, visibilidade e papel WAN/CLIENT
  │   ├── managed_device: nome amigável e observações
  │   └── audit_log: auditoria local sem segredos
  └── MikrotikGateway
@@ -75,6 +75,30 @@ verbos mutáveis e comandos via POST, a Fase 2 não os chama.
 [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
 ## Dados e correlação
+
+### Configuração local de portas
+
+O RouterOS descobre interfaces por `GET /rest/interface`; ele é a fonte de
+verdade apenas para a existência e o estado observado delas. Uma interface
+Ethernet nova sem registro em `managed_port` é não gerenciada e continua visível em
+**Configurações → Interfaces descobertas**. O operador pode então persistir
+nome amigável, descrição, CIDR, DHCP server, visibilidade e papel local no
+SQLite por `PUT /api/ports/{interface}`.
+
+```text
+RouterOS descobre interface → configuração local → SQLite → dashboard
+```
+
+`WAN` e `CLIENT` são papéis locais, não características inferidas do nome ou
+tipo físico da interface. O dashboard escolhe a Internet pelo papel `WAN` e
+lista portas de cliente habilitadas pelo papel `CLIENT`; não há regra de que
+`ether1` seja Internet. A atribuição de papel não altera rota, NAT, DHCP
+client, interface list, firewall nem qualquer outro estado RouterOS. O fixture
+de mock pode declarar `ether1` como WAN, mas isso não é lógica de runtime.
+
+Como essa persistência ocorre somente no SQLite, ela permanece disponível em
+modo real read-only. A API local pode usar `PUT`; a restrição GET-only se aplica
+ao transporte entre backend e RouterOS.
 
 `RouterOsMapper` preserva `name`, `type`, `running` e `disabled` de interfaces.
 Tráfego instantâneo permanece indisponível: byte counters acumulados não são
@@ -147,10 +171,14 @@ Basic Auth fica somente no cliente backend. `MikrotikProperties.toString()`
 mascara senha; falhas e logs RouterOS não incluem senha, header Authorization,
 body remoto nem stack trace na resposta API.
 
-O TLS verifica certificado/hostname por padrão. `verifySsl=false` é uma exceção
-isolada no cliente RouterOS para desenvolvimento local com self-signed não
-confiável; não instala trust-all global na JVM. Timeouts padrão são 3 s para
-conectar e 5 s para resposta.
+Com `verifySsl=true`, o TLS verifica certificado e hostname/IP usando o
+truststore da JVM que executa o backend — em instalações padrão, normalmente o
+`cacerts` do JDK/JRE desse processo. A CA/certificado do RouterOS deve ser
+confiável por esse truststore, ou a JVM deve ser iniciada com um truststore
+explicitamente configurado. `verifySsl=false` é uma exceção isolada no
+`RouterOsRestClient` para desenvolvimento local com self-signed não confiável;
+não instala trust-all global na JVM. Timeouts padrão são 3 s para conectar e 5
+s para resposta.
 
 401/403 viram falha de autenticação/permissão; indisponibilidade, TLS e payload
 inesperado são categorias separadas e sanitizadas. Consulte

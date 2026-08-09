@@ -16,7 +16,7 @@ diagnósticos de um RouterOS 7 sem expor credenciais ao navegador.
 
 ```text
 Browser → Spring Boot local → HTTPS GET /rest → RouterOS
-                       ↘ SQLite local (metadados e auditoria)
+                       ↘ SQLite local (metadados, papel da porta e auditoria)
 ```
 
 O frontend nunca recebe senha, header `Authorization` ou URL RouterOS. O
@@ -73,10 +73,15 @@ MIKROTIK_WRITE_ENABLED=false
 O botão pode chamar uma rota `POST` da nossa API local; a comunicação com
 RouterOS ainda é somente `GET /rest/system/resource`.
 
-`MIKROTIK_VERIFY_SSL=true` valida a cadeia e o hostname/IP do certificado. Para
-self-signed, prefira confiar na CA no computador local. Use `false` apenas em
-desenvolvimento local controlado: a exceção TLS fica isolada no cliente
-RouterOS e não altera SSL global da JVM nem outros clientes HTTP.
+`MIKROTIK_VERIFY_SSL=true` valida a cadeia e o hostname/IP do certificado com
+as âncoras de confiança do truststore da JVM que executa o backend. Em uma
+instalação Java padrão, isso normalmente é o `cacerts` do JDK/JRE usado pelo
+processo — não apenas o repositório de certificados do navegador ou do sistema
+operacional. Para um certificado self-signed, faça a CA/certificado ser
+confiável por essa JVM; outra opção de implantação é iniciar a JVM com um
+truststore explicitamente configurado. Use `false` apenas em desenvolvimento
+local controlado: a exceção TLS fica isolada no `RouterOsRestClient` e não
+altera SSL global da JVM nem outros clientes HTTP.
 
 ## Variáveis de ambiente
 
@@ -132,8 +137,37 @@ firewall.
 
 SQLite continua sendo fonte de verdade apenas para estado local: nome amigável
 e observações do dispositivo; nome, descrição, CIDR, DHCP server e visibilidade
-da porta; e auditoria. `PUT /api/devices/{mac}` e `PUT /api/ports/{interface}`
-continuam permitidos para esses metadados locais em read-only.
+da porta; papel `WAN` ou `CLIENT`; e auditoria. `PUT /api/devices/{mac}` e
+`PUT /api/ports/{interface}` continuam permitidos para esses metadados locais
+em read-only.
+
+## Configuração local de portas e WAN
+
+Interfaces vêm do RouterOS por `GET /rest/interface`. Uma interface descoberta
+que ainda não exista no SQLite aparece em **Configurações → Interfaces
+descobertas** como não gerenciada. Nessa tela o operador pode salvar nome
+amigável, descrição, CIDR, DHCP server, visibilidade no dashboard e o papel
+local `WAN` ou `CLIENT`.
+
+```text
+RouterOS descobre interface
+          ↓
+operador configura metadados locais
+          ↓
+SQLite local
+          ↓
+dashboard
+```
+
+Esse fluxo usa somente `PUT /api/ports/{interface}` na API local. Ele não muda
+interface, rota, NAT, DHCP client, firewall ou qualquer outra configuração do
+RouterOS. A porta física não é renomeada no equipamento. Em modo real
+read-only, esses campos locais continuam editáveis.
+
+O dashboard identifica a Internet pelo papel local `WAN`, não pelo nome físico
+da interface. Portanto, a WAN pode ser `ether5` ou outra interface apresentada
+pelo fluxo de portas atual; `ether1` é WAN apenas no fixture de mock atual, não
+uma regra do produto.
 
 ## Diagnóstico e erros
 
