@@ -44,6 +44,18 @@ class RouterOsSimpleQueueMapperTest {
     }
 
     @Test
+    void omitsDuplicateExactOwnershipInsteadOfChoosingTheFirstQueue() {
+        RouterOsSimpleQueueDto first = new RouterOsSimpleQueueDto(
+                "*A", "mtmgr-port-ether2", "MTMGR:PORT:ether2", "10M/100M", "false", "false", "10.10.10.0/24");
+        RouterOsSimpleQueueDto duplicate = new RouterOsSimpleQueueDto(
+                "*B", "mtmgr-port-ether2-copy", "MTMGR:PORT:ether2", "20M/200M", "false", "false", "10.10.10.0/24");
+
+        Map<String, SpeedLimit> portSpeeds = RouterOsSimpleQueueMapper.toOwnedPortSpeeds(List.of(first, duplicate));
+
+        assertThat(portSpeeds).doesNotContainKey("ether2");
+    }
+
+    @Test
     void keepsRouterOsStringTransportAndIgnoresUnknownProperties() throws Exception {
         RouterOsSimpleQueueDto queue = objectMapper.readValue("""
                 {

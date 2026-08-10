@@ -11,7 +11,9 @@ import java.util.Optional;
 
 /**
  * Boundary to RouterOS. Implementations return application-owned domain models,
- * never raw RouterOS JSON. The REST implementation will be introduced in Phase 2.
+ * never raw RouterOS JSON. The real REST implementation remains GET-only in
+ * Phase 3; its legacy mutation-shaped methods deliberately fail before making
+ * an HTTP request.
  */
 public interface MikrotikGateway {
     GatewayConnectionStatus connectionStatus();

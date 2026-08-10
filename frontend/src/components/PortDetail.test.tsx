@@ -41,3 +41,13 @@ it('disables RouterOS speed controls without disabling the local configuration f
   expect(screen.getByRole('button', { name: 'Salvar limite' })).toBeDisabled();
   expect(screen.getByText('Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.')).toBeInTheDocument();
 });
+
+it('keeps the real speed save disabled while allowing a dry-run preview', () => {
+  const onPreviewSpeed = vi.fn();
+  render(<PortDetail port={port} saving={false} readOnly onSaveSpeed={vi.fn()} onPreviewSpeed={onPreviewSpeed} onDeviceSelect={vi.fn()} onBack={vi.fn()} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano' }));
+
+  expect(onPreviewSpeed).toHaveBeenCalledWith(port, 100_000_000, 20_000_000);
+  expect(screen.getByRole('button', { name: 'Salvar limite' })).toBeDisabled();
+});

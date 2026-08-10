@@ -216,3 +216,53 @@ it('saves a discovered interface locally and refreshes the dashboard without a b
   expect(await screen.findByText('Cliente João')).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/devices')).not.toHaveLength(0);
 });
+
+it('uses a single combined write-analysis endpoint for Analisar RouterOS and updates readiness and reconciliation together', async () => {
+  const readinessReport = {
+    generatedAt: '2026-08-09T12:00:00Z', mockMode: false, writeFlagEnabled: false, readyForFutureExecution: true,
+    executionEnabled: false, phaseNotice: 'A execução RouterOS permanece desabilitada na Fase 3.',
+    checks: [{ code: 'ROUTEROS_CONNECTED', description: 'RouterOS conectado', satisfied: true, severity: 'INFO', detail: 'Leitura confirmada.' }],
+    summary: { managed: 1, foreign: 0, inSync: 1, drifted: 0, missing: 0, conflicts: 0, ambiguous: 0, managedPorts: 1, validManagedPorts: 1 },
+  };
+  const reconciliationReport = {
+    generatedAt: '2026-08-09T12:00:00Z', snapshotFingerprint: 'single-snapshot-fingerprint', observedInterfaceCount: 2,
+    observedDhcpServerCount: 1, observedLeaseCount: 1, observedSimpleQueueCount: 1, fastTrackDetected: false,
+    resources: [{
+      resourceType: 'SIMPLE_QUEUE', resourceKey: 'ether2', displayName: 'Queue da porta ether2', ownership: 'MANAGED', status: 'IN_SYNC',
+      expectedName: 'mtmgr-port-ether2', expectedTarget: '10.10.10.0/24', observedName: 'mtmgr-port-ether2', observedTarget: '10.10.10.0/24',
+      conflict: false, findings: [],
+    }],
+    summary: { managed: 1, foreign: 0, inSync: 1, drifted: 0, missing: 0, conflicts: 0, ambiguous: 0, notApplicable: 0 },
+  };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(connectedReadOnlyStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    if (String(input) === '/api/diagnostics') {
+      return jsonResponse({ connected: true, routerOsVersion: '7.16.2', latencyMillis: 12, mockMode: false, fastTrackDetected: false, checks: [] });
+    }
+    if (String(input) === '/api/write-analysis') {
+      return jsonResponse({ snapshotFingerprint: 'single-snapshot-fingerprint', readiness: readinessReport, reconciliation: reconciliationReport });
+    }
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  await screen.findByRole('heading', { name: 'Dashboard' });
+  fireEvent.click(screen.getByRole('button', { name: 'Configurações' }));
+  await screen.findByRole('button', { name: 'Analisar RouterOS' });
+  fireEvent.click(screen.getByRole('button', { name: 'Analisar RouterOS' }));
+
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/write-analysis')).toHaveLength(1));
+  await screen.findByText('IN_SYNC');
+  expect(screen.getByText('Queue da porta ether2')).toBeInTheDocument();
+
+  // The legacy split endpoints must not be called simultaneously.
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/write-readiness')).toHaveLength(0);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/reconciliation')).toHaveLength(0);
+
+  // The execution-disabled notice stays visible.
+  expect(screen.getByText('A execução RouterOS permanece desabilitada na Fase 3.')).toBeInTheDocument();
+});

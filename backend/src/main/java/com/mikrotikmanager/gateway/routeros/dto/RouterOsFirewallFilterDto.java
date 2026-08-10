@@ -17,6 +17,12 @@ public record RouterOsFirewallFilterDto(
         String disabled,
         String dynamic,
         String chain,
-        String comment
+        String comment,
+        @JsonProperty("src-address") String srcAddress,
+        @JsonProperty("src-address-list") String srcAddressList
 ) {
+    /** Compatibility constructor for existing read-only fixtures. */
+    public RouterOsFirewallFilterDto(String id, String action, String disabled, String dynamic, String chain, String comment) {
+        this(id, action, disabled, dynamic, chain, comment, null, null);
+    }
 }

@@ -9,7 +9,8 @@ import { PortDetail } from './components/PortDetail';
 import type { LocalPortConfiguration } from './components/PortConfigurationEditor';
 import { Settings } from './components/Settings';
 import { StatusBadge } from './components/StatusBadge';
-import type { AuditLog, Device, Diagnostics, Port, SystemStatus } from './types';
+import { OperationPlanDialog } from './components/OperationPlanDialog';
+import type { AuditLog, Device, Diagnostics, OperationPlan, Port, ReconciliationReport, SystemStatus, WriteReadinessReport } from './types';
 
 type View = 'dashboard' | 'devices' | 'history' | 'settings' | 'port';
 
@@ -17,6 +18,12 @@ interface Confirmation {
   device: Device;
   block: boolean;
 }
+
+type PlanIntent =
+  | { type: 'BLOCK_DEVICE'; macAddress: string }
+  | { type: 'UNBLOCK_DEVICE'; macAddress: string }
+  | { type: 'SET_PORT_SPEED'; interfaceName: string; downloadBps: number; uploadBps: number }
+  | { type: 'SET_DEVICE_SPEED'; macAddress: string; downloadBps: number; uploadBps: number };
 
 const navItems: Array<{ id: Exclude<View, 'port'>; label: string; symbol: string }> = [
   { id: 'dashboard', label: 'Dashboard', symbol: '▦' },
@@ -61,12 +68,18 @@ export default function App() {
   const [audit, setAudit] = useState<AuditLog[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [readiness, setReadiness] = useState<WriteReadinessReport | null>(null);
+  const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
   const [selectedPortName, setSelectedPortName] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [planIntent, setPlanIntent] = useState<PlanIntent | null>(null);
+  const [operationPlan, setOperationPlan] = useState<OperationPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const applyRouterData = useCallback((nextPorts: Port[], nextDevices: Device[]) => {
@@ -117,6 +130,58 @@ export default function App() {
       setError(errorMessage(reason, 'Não foi possível carregar os diagnósticos.'));
     }
   }, []);
+
+  // These diagnostics are deliberately on-demand. They are not part of the
+  // five-second dashboard polling loop because reconciliation reads a fuller
+  // RouterOS snapshot. A single combined endpoint captures one snapshot and
+  // derives both readiness and reconciliation from it, so the two views always
+  // refer to the same observed moment and the six RouterOS collections are not
+  // read twice for the same analysis.
+  const analyzeRouterOS = useCallback(() => {
+    setAnalyzing(true);
+    setError(null);
+    void api.writeAnalysis()
+      .then((analysis) => {
+        setReadiness(analysis.readiness);
+        setReconciliation(analysis.reconciliation);
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível analisar o estado RouterOS.')))
+      .finally(() => setAnalyzing(false));
+  }, []);
+
+  const requestPlan = useCallback(async (intent: PlanIntent): Promise<OperationPlan> => {
+    switch (intent.type) {
+      case 'BLOCK_DEVICE':
+        return api.planBlockDevice(intent.macAddress);
+      case 'UNBLOCK_DEVICE':
+        return api.planUnblockDevice(intent.macAddress);
+      case 'SET_PORT_SPEED':
+        return api.planPortSpeed(intent.interfaceName, intent.downloadBps, intent.uploadBps);
+      case 'SET_DEVICE_SPEED':
+        return api.planDeviceSpeed(intent.macAddress, intent.downloadBps, intent.uploadBps);
+    }
+  }, []);
+
+  const previewPlan = useCallback((intent: PlanIntent) => {
+    setPlanIntent(intent);
+    setOperationPlan(null);
+    setPlanning(true);
+    setError(null);
+    void requestPlan(intent)
+      .then(setOperationPlan)
+      .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível gerar a simulação.')))
+      .finally(() => setPlanning(false));
+  }, [requestPlan]);
+
+  const refreshPlan = useCallback(() => {
+    if (!planIntent) return;
+    setPlanning(true);
+    setError(null);
+    void requestPlan(planIntent)
+      .then(setOperationPlan)
+      .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível atualizar a simulação.')))
+      .finally(() => setPlanning(false));
+  }, [planIntent, requestPlan]);
 
   useEffect(() => {
     void refreshSystemStatus(true);
@@ -201,7 +266,10 @@ export default function App() {
 
       try {
         const refreshedPorts = await api.ports();
-        applyRouterData(refreshedPorts);
+        // A local metadata update refreshes the interface list only. Devices
+        // keep their last read-only RouterOS observation until normal polling
+        // fetches both collections together.
+        setPorts(refreshedPorts);
         return refreshedPorts.find((port) => port.interfaceName === updatedPort.interfaceName) ?? updatedPort;
       } catch {
         // Port PUT returns local metadata. Preserve the live RouterOS data until polling can refresh it.
@@ -284,8 +352,8 @@ export default function App() {
     if (view === 'dashboard') return <Dashboard ports={ports} onManage={openPort} />;
     if (view === 'devices') return <div className="page-stack"><section className="page-heading"><div><p className="eyebrow">Todos os clientes</p><h1>Dispositivos</h1><p>Pesquise por nome, IP ou MAC e gerencie cada dispositivo.</p></div></section><DeviceList devices={devices} onSelect={setSelectedDevice} /></div>;
     if (view === 'history') return <History entries={audit} />;
-    if (view === 'settings') return <Settings systemStatus={systemStatus} diagnostics={diagnostics} ports={ports} testing={testing} saving={busy} onTestConnection={testConnection} onSavePort={savePortConfiguration} />;
-    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} readOnly={routerControlsReadOnly} onSaveSpeed={savePortSpeed} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
+    if (view === 'settings') return <Settings systemStatus={systemStatus} diagnostics={diagnostics} readiness={readiness} reconciliation={reconciliation} ports={ports} testing={testing} saving={busy} analyzing={analyzing} onTestConnection={testConnection} onAnalyzeRouterOS={analyzeRouterOS} onSavePort={savePortConfiguration} />;
+    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} readOnly={routerControlsReadOnly} onSaveSpeed={savePortSpeed} onPreviewSpeed={(port, downloadBps, uploadBps) => previewPlan({ type: 'SET_PORT_SPEED', interfaceName: port.interfaceName, downloadBps, uploadBps })} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
     return <div className="empty-state"><h2>Porta não encontrada</h2><button className="button primary" type="button" onClick={() => navigate('dashboard')}>Voltar ao dashboard</button></div>;
   };
 
@@ -294,7 +362,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">M</span><div><strong>MikroTik</strong><small>Local Manager</small></div></div>
         <nav aria-label="Navegação principal">{navItems.map((item) => <button key={item.id} type="button" className={view === item.id ? 'nav-item active' : 'nav-item'} aria-current={view === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.symbol}</span>{item.label}</button>)}</nav>
-        <div className="sidebar-foot"><span>Local only</span><small>v0.2 · Fase 2</small></div>
+        <div className="sidebar-foot"><span>Local only</span><small>v0.3 · Fase 3</small></div>
       </aside>
       <main className="main-content">
         <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
@@ -303,8 +371,9 @@ export default function App() {
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>
-      <DeviceDetails device={selectedDevice} busy={busy} readOnly={routerControlsReadOnly} onClose={() => setSelectedDevice(null)} onSave={saveDevice} onRequestBlock={(device) => !routerControlsReadOnly && setConfirmation({ device, block: !device.blocked })} />
+      <DeviceDetails device={selectedDevice} busy={busy} readOnly={routerControlsReadOnly} onClose={() => setSelectedDevice(null)} onSave={saveDevice} onRequestBlock={(device) => !routerControlsReadOnly && setConfirmation({ device, block: !device.blocked })} onPreviewBlock={(device, block) => previewPlan(block ? { type: 'BLOCK_DEVICE', macAddress: device.macAddress } : { type: 'UNBLOCK_DEVICE', macAddress: device.macAddress })} onPreviewSpeed={(device, downloadBps, uploadBps) => previewPlan({ type: 'SET_DEVICE_SPEED', macAddress: device.macAddress, downloadBps, uploadBps })} />
       <ConfirmDialog open={Boolean(confirmation)} title={confirmation?.block ? `Bloquear ${confirmation.device.displayName}?` : `Liberar ${confirmation?.device.displayName ?? 'dispositivo'}?`} description={confirmation?.block ? 'O dispositivo perderá acesso à rede. Esta alteração é reversível.' : 'O acesso será liberado novamente para este dispositivo.'} confirmLabel={confirmation?.block ? 'Bloquear' : 'Liberar acesso'} busy={busy} onCancel={() => !busy && setConfirmation(null)} onConfirm={confirmBlock} />
+      <OperationPlanDialog open={Boolean(planIntent)} plan={operationPlan} loading={planning} onClose={() => { setPlanIntent(null); setOperationPlan(null); }} onRefresh={refreshPlan} />
     </div>
   );
 }

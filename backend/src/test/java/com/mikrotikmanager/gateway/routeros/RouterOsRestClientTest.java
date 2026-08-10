@@ -25,7 +25,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 class RouterOsRestClientTest {
     @Test
-    void usesGetForEveryPhaseTwoRouterOsResource() {
+    void usesGetForEveryReadOnlyRouterOsResource() {
         TestTransport transport = testTransport();
         transport.server().expect(requestTo("http://127.0.0.1:18080/rest/system/resource"))
                 .andExpect(method(HttpMethod.GET))
@@ -45,6 +45,9 @@ class RouterOsRestClientTest {
         transport.server().expect(requestTo("http://127.0.0.1:18080/rest/ip/firewall/filter"))
                 .andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+        transport.server().expect(requestTo("http://127.0.0.1:18080/rest/ip/firewall/address-list"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
 
         List<RouterOsSystemResourceDto> systemResources = transport.client().getSystemResources();
         List<RouterOsInterfaceDto> interfaces = transport.client().getInterfaces();
@@ -52,6 +55,7 @@ class RouterOsRestClientTest {
         transport.client().getDhcpLeases(TestRouterOsDto.class);
         transport.client().getSimpleQueues(TestRouterOsDto.class);
         transport.client().getFirewallFilters(TestRouterOsDto.class);
+        transport.client().getFirewallAddressLists(TestRouterOsDto.class);
 
         assertThat(systemResources).singleElement().extracting(RouterOsSystemResourceDto::version).isEqualTo("7.18.2");
         assertThat(interfaces).singleElement().extracting(RouterOsInterfaceDto::name).isEqualTo("ether2");

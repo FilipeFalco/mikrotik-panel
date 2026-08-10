@@ -1,4 +1,16 @@
-import type { ApiErrorBody, AuditLog, Device, Diagnostics, Port, PortRole, SystemStatus } from './types';
+import type {
+  ApiErrorBody,
+  AuditLog,
+  Device,
+  Diagnostics,
+  OperationPlan,
+  Port,
+  PortRole,
+  ReconciliationReport,
+  SystemStatus,
+  WriteAnalysis,
+  WriteReadinessReport,
+} from './types';
 
 export class ApiError extends Error {
   readonly code: string;
@@ -33,6 +45,9 @@ export const api = {
   systemStatus: () => request<SystemStatus>('/api/system/status'),
   testConnection: () => request<SystemStatus>('/api/system/test-connection', { method: 'POST' }),
   diagnostics: () => request<Diagnostics>('/api/diagnostics'),
+  reconciliation: () => request<ReconciliationReport>('/api/reconciliation'),
+  writeReadiness: () => request<WriteReadinessReport>('/api/write-readiness'),
+  writeAnalysis: () => request<WriteAnalysis>('/api/write-analysis'),
   ports: () => request<Port[]>('/api/ports'),
   port: (interfaceName: string) => request<Port>(`/api/ports/${encoded(interfaceName)}`),
   updatePort: (
@@ -73,4 +88,20 @@ export const api = {
     }),
   blockDevice: (macAddress: string) => request<Device>(`/api/devices/${encoded(macAddress)}/block`, { method: 'POST' }),
   unblockDevice: (macAddress: string) => request<Device>(`/api/devices/${encoded(macAddress)}/block`, { method: 'DELETE' }),
+  planBlockDevice: (macAddress: string) => request<OperationPlan>('/api/plans/block', {
+    method: 'POST',
+    body: JSON.stringify({ macAddress }),
+  }),
+  planUnblockDevice: (macAddress: string) => request<OperationPlan>('/api/plans/unblock', {
+    method: 'POST',
+    body: JSON.stringify({ macAddress }),
+  }),
+  planPortSpeed: (interfaceName: string, downloadBps: number, uploadBps: number) => request<OperationPlan>('/api/plans/port-speed', {
+    method: 'POST',
+    body: JSON.stringify({ interfaceName, downloadBps, uploadBps }),
+  }),
+  planDeviceSpeed: (macAddress: string, downloadBps: number, uploadBps: number) => request<OperationPlan>('/api/plans/device-speed', {
+    method: 'POST',
+    body: JSON.stringify({ macAddress, downloadBps, uploadBps }),
+  }),
 };

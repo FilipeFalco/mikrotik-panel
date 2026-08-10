@@ -6,6 +6,10 @@ import java.util.List;
 /**
  * CIDR parser that accepts IP literals only. It intentionally does not call the
  * network stack, so a hostname can never trigger DNS during validation.
+ *
+ * <p>The same parser backs {@link CidrRange} overlap detection, so a single
+ * deterministic code path validates, normalizes and compares IPv4/IPv6 ranges
+ * without {@link java.net.InetAddress#getByName} or any DNS lookup.</p>
  */
 final class CidrValidator {
     private CidrValidator() {
@@ -36,6 +40,56 @@ final class CidrValidator {
         applyNetworkMask(network, parsed.prefixLength());
         String address = network.length == 4 ? formatIpv4(network) : formatIpv6(network);
         return address + "/" + parsed.prefixLength();
+    }
+
+    /**
+     * Parses a CIDR or a bare IP literal into a range without DNS resolution.
+     * A bare IP is treated as a host range ({@code /32} or {@code /128}).
+     * Returns {@code null} for anything that is not a safe IPv4/IPv6 literal
+     * with a valid prefix, so callers never have to fall back to hostname
+     * resolution.
+     */
+    static CidrRange parseRange(String cidr) {
+        if (cidr == null) {
+            return null;
+        }
+        String trimmed = cidr.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        ParsedCidr parsed = parse(trimmed);
+        if (parsed == null && !trimmed.contains("/")) {
+            byte[] address = parseIpLiteral(trimmed);
+            if (address != null) {
+                parsed = new ParsedCidr(address, address.length * Byte.SIZE);
+            }
+        }
+        if (parsed == null) {
+            return null;
+        }
+        byte[] network = networkOf(parsed.address(), parsed.prefixLength());
+        byte[] broadcast = broadcastOf(parsed.address(), parsed.prefixLength());
+        return new CidrRange(network, broadcast, parsed.prefixLength());
+    }
+
+    private static byte[] networkOf(byte[] address, int prefixLength) {
+        byte[] network = address.clone();
+        applyNetworkMask(network, prefixLength);
+        return network;
+    }
+
+    private static byte[] broadcastOf(byte[] address, int prefixLength) {
+        byte[] broadcast = networkOf(address, prefixLength);
+        int completeBytes = prefixLength / Byte.SIZE;
+        int remainingBits = prefixLength % Byte.SIZE;
+        if (remainingBits > 0) {
+            broadcast[completeBytes] |= (byte) (0xFF >>> remainingBits);
+            completeBytes++;
+        }
+        for (int index = completeBytes; index < broadcast.length; index++) {
+            broadcast[index] = (byte) 0xFF;
+        }
+        return broadcast;
     }
 
     private static ParsedCidr parse(String cidr) {

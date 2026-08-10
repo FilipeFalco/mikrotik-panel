@@ -57,6 +57,7 @@ public final class RouterOsRestClient {
     private static final String DHCP_LEASE_PATH = "/rest/ip/dhcp-server/lease";
     private static final String SIMPLE_QUEUE_PATH = "/rest/queue/simple";
     private static final String FIREWALL_FILTER_PATH = "/rest/ip/firewall/filter";
+    private static final String FIREWALL_ADDRESS_LIST_PATH = "/rest/ip/firewall/address-list";
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     private final RestClient restClient;
@@ -125,6 +126,11 @@ public final class RouterOsRestClient {
     /** Reads the {@code /ip/firewall/filter} collection. */
     public <T> List<T> getFirewallFilters(Class<T> elementType) {
         return getCollection(FIREWALL_FILTER_PATH, elementType);
+    }
+
+    /** Reads the {@code /ip/firewall/address-list} collection. */
+    public <T> List<T> getFirewallAddressLists(Class<T> elementType) {
+        return getCollection(FIREWALL_ADDRESS_LIST_PATH, elementType);
     }
 
     private <T> List<T> getCollection(String path, Class<T> elementType) {

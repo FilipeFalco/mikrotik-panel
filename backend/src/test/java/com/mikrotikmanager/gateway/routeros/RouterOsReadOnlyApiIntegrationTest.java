@@ -68,6 +68,7 @@ class RouterOsReadOnlyApiIntegrationTest {
     private static final String DHCP_LEASES = "/rest/ip/dhcp-server/lease";
     private static final String SIMPLE_QUEUES = "/rest/queue/simple";
     private static final String FIREWALL_FILTERS = "/rest/ip/firewall/filter";
+    private static final String FIREWALL_ADDRESS_LISTS = "/rest/ip/firewall/address-list";
 
     private static final FakeRouterOsServer ROUTER = FakeRouterOsServer.start();
     private static final Path DATABASE_DIRECTORY = createTemporaryDatabaseDirectory();
@@ -276,6 +277,273 @@ class RouterOsReadOnlyApiIntegrationTest {
     }
 
     @Test
+    void keepsAllPhaseThreeReadinessReconciliationAndDryRunFlowsStrictlyGetOnlyAgainstRouterOs() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.clearRequests();
+
+        // Existing real read-only flows remain usable before the on-demand Phase 3 flows.
+        mockMvc.perform(get("/api/system/status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.readOnly").value(true));
+        mockMvc.perform(get("/api/ports"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].interfaceName").value("ether2"));
+        mockMvc.perform(get("/api/devices"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].macAddress").value("AA:BB:CC:DD:EE:01"));
+        mockMvc.perform(get("/api/diagnostics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fastTrackDetected").value(true));
+
+        mockMvc.perform(get("/api/reconciliation"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resources[0].resourceType").value("SIMPLE_QUEUE"))
+                .andExpect(jsonPath("$.resources[0].ownership").value("MANAGED"))
+                .andExpect(jsonPath("$.resources[0].status").value("IN_SYNC"))
+                .andExpect(jsonPath("$.resources[0].conflict").value(false))
+                .andExpect(content().string(not(containsString("\".id\""))))
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        mockMvc.perform(get("/api/write-readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mockMode").value(false))
+                .andExpect(jsonPath("$.writeFlagEnabled").value(false))
+                .andExpect(jsonPath("$.executionEnabled").value(false))
+                .andExpect(jsonPath("$.phaseNotice").value(containsString("Fase 3")))
+                .andExpect(jsonPath("$.checks[?(@.code == 'FASTTRACK_BANDWIDTH_WARNING')].severity").value("WARNING"))
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        mockMvc.perform(post("/api/plans/block")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("BLOCK_DEVICE"))
+                .andExpect(jsonPath("$.target.macAddress").value("AA:BB:CC:DD:EE:01"))
+                .andExpect(jsonPath("$.executable").value(false))
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'BLOCKING_STRATEGY_DECIDED')].satisfied").value(false));
+        mockMvc.perform(post("/api/plans/unblock")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("UNBLOCK_DEVICE"))
+                .andExpect(jsonPath("$.changeRequired").value(false))
+                .andExpect(jsonPath("$.executable").value(false));
+        mockMvc.perform(post("/api/plans/port-speed")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"interfaceName\":\"ether2\",\"downloadBps\":20000000,\"uploadBps\":5000000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("SET_PORT_SPEED"))
+                .andExpect(jsonPath("$.changeRequired").value(false))
+                .andExpect(jsonPath("$.executable").value(false))
+                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_ACTIVE')].severity").value("WARNING"));
+        mockMvc.perform(post("/api/plans/device-speed")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\",\"downloadBps\":10000000,\"uploadBps\":2000000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("SET_DEVICE_SPEED"))
+                .andExpect(jsonPath("$.target.interfaceName").value("ether2"))
+                .andExpect(jsonPath("$.executable").value(false))
+                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_ACTIVE')].severity").value("WARNING"))
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+        assertThat(ROUTER.requests()).extracting(FakeRouterOsServer.CapturedRequest::path)
+                .contains(SYSTEM_RESOURCE, INTERFACES, DHCP_SERVERS, DHCP_LEASES, SIMPLE_QUEUES,
+                        FIREWALL_FILTERS, FIREWALL_ADDRESS_LISTS);
+    }
+
+    @Test
+    void combinedWriteAnalysisUsesOneSnapshotAndDoesNotDuplicateRouterOsCollections() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.clearRequests();
+
+        mockMvc.perform(get("/api/write-analysis"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshotFingerprint").isString())
+                .andExpect(jsonPath("$.readiness.executionEnabled").value(false))
+                .andExpect(jsonPath("$.readiness.summary.managedPorts").value(1))
+                .andExpect(jsonPath("$.readiness.summary.validManagedPorts").value(1))
+                .andExpect(jsonPath("$.reconciliation.resources[0].resourceType").value("SIMPLE_QUEUE"))
+                .andExpect(jsonPath("$.reconciliation.snapshotFingerprint").isString())
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        // Readiness and reconciliation share one snapshot: each RouterOS
+        // collection is read at most once, plus one /system/resource for the
+        // connection status probe. No collection is duplicated.
+        assertThat(ROUTER.requestCount(INTERFACES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(DHCP_SERVERS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(DHCP_LEASES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(SIMPLE_QUEUES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(FIREWALL_FILTERS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(FIREWALL_ADDRESS_LISTS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(SYSTEM_RESOURCE)).isLessThanOrEqualTo(1);
+        assertThat(ROUTER.requests()).allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
+    void returnsStructuredInvalidDeviceDryRunAndPreservesTheParentLimitInvariant() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.clearRequests();
+
+        mockMvc.perform(post("/api/plans/block")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"not-a-mac\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("BLOCK_DEVICE"))
+                .andExpect(jsonPath("$.target.identifier").value("invalid-mac"))
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'DEVICE_HAS_MAC')].satisfied").value(false))
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'DEVICE_EXISTS')].satisfied").value(false))
+                .andExpect(jsonPath("$.executable").value(false));
+
+        mockMvc.perform(post("/api/plans/device-speed")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\",\"downloadBps\":150000000,\"uploadBps\":10000000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("SET_DEVICE_SPEED"))
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'LIMIT_WITHIN_PARENT')].satisfied").value(false))
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'LIMIT_WITHIN_PARENT')].severity").value("BLOCKING"))
+                .andExpect(jsonPath("$.readyForFutureExecution").value(false))
+                .andExpect(jsonPath("$.executable").value(false));
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
+    void exposesOnDemandFakeRouterOsReconciliationFixturesWithoutAdoptingManualResources() throws Exception {
+        saveClientPortForPhaseThree();
+
+        stubSimpleQueues("""
+                [{".id":"*20","name":"mtmgr-port-ether2","comment":"MTMGR:PORT:ether2",
+                  "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.10.10.0/24"}]
+                """);
+        assertReconciliation("MANAGED", "IN_SYNC", false);
+
+        stubSimpleQueues("""
+                [{".id":"*20","name":"mtmgr-port-ether2","comment":"MTMGR:PORT:ether2",
+                  "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.99.0.0/24"}]
+                """);
+        assertReconciliation("MANAGED", "DRIFTED", false);
+
+        stubSimpleQueues("""
+                [{".id":"*20","name":"manual-client-limit","comment":"Criada manualmente",
+                  "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.10.10.0/24"}]
+                """);
+        assertReconciliation("FOREIGN", "CONFLICT", true);
+
+        stubSimpleQueues("""
+                [
+                  {".id":"*20","name":"mtmgr-port-ether2-a","comment":"MTMGR:PORT:ether2",
+                   "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.10.10.0/24"},
+                  {".id":"*21","name":"mtmgr-port-ether2-b","comment":"MTMGR:PORT:ether2",
+                   "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.10.10.0/24"}
+                ]
+                """);
+        assertReconciliation("MANAGED", "AMBIGUOUS_OWNERSHIP", true);
+
+        stubSimpleQueues("[]");
+        assertReconciliation("UNKNOWN", "MISSING", false);
+
+        stubSimpleQueues("""
+                [{".id":"*20","name":"mtmgr-port-ether2","comment":"manual",
+                  "max-limit":"5M/20M","disabled":"false","dynamic":"false","target":"10.50.0.0/24"}]
+                """);
+        assertReconciliation("FOREIGN", "CONFLICT", true);
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+        assertThat(ROUTER.requestCount(FIREWALL_ADDRESS_LISTS)).isEqualTo(6);
+    }
+
+    @Test
+    void treatsManualFirewallFilterWithExactDeviceIpAsForeignForUnblockDryRun() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.respondJson(FIREWALL_FILTERS, """
+                [{
+                  ".id":"*45","action":"drop","disabled":"false","dynamic":"false","chain":"forward",
+                  "src-address":"10.10.10.21","comment":"Bloqueio manual"
+                }]
+                """);
+        ROUTER.clearRequests();
+
+        assertForeignFirewallUnblockPlan();
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+        assertThat(ROUTER.requests()).extracting(FakeRouterOsServer.CapturedRequest::path)
+                .contains(FIREWALL_FILTERS, FIREWALL_ADDRESS_LISTS);
+    }
+
+    @Test
+    void treatsManualFirewallAddressListMatchAsForeignForUnblockDryRun() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.respondJson(FIREWALL_FILTERS, """
+                [{
+                  ".id":"*46","action":"reject","disabled":"false","dynamic":"false","chain":"forward",
+                  "src-address-list":"manual-blocked-devices","comment":"Bloqueio manual via lista"
+                }]
+                """);
+        ROUTER.respondJson(FIREWALL_ADDRESS_LISTS, """
+                [{
+                  ".id":"*47","list":"manual-blocked-devices","address":"10.10.10.21",
+                  "comment":"Entrada manual","disabled":"false","dynamic":"false"
+                }]
+                """);
+        ROUTER.clearRequests();
+
+        assertForeignFirewallUnblockPlan();
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+        assertThat(ROUTER.requests()).extracting(FakeRouterOsServer.CapturedRequest::path)
+                .contains(FIREWALL_FILTERS, FIREWALL_ADDRESS_LISTS);
+    }
+
+    @Test
+    void doesNotOverreachByTreatingBroadManualFirewallCidrAsDeviceSpecificBlock() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.respondJson(FIREWALL_FILTERS, """
+                [{
+                  ".id":"*48","action":"drop","disabled":"false","dynamic":"false","chain":"forward",
+                  "src-address":"10.10.10.0/24","comment":"Regra manual de rede"
+                }]
+                """);
+        ROUTER.clearRequests();
+
+        mockMvc.perform(post("/api/plans/unblock")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("UNBLOCK_DEVICE"))
+                .andExpect(jsonPath("$.ownership").value("UNKNOWN"))
+                .andExpect(jsonPath("$.currentState.blocked").value(false))
+                .andExpect(jsonPath("$.changeRequired").value(false))
+                .andExpect(jsonPath("$.conflicts").isEmpty())
+                .andExpect(jsonPath("$.executable").value(false));
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
+    void sanitizesUnreadableRouterResponseInWriteReadinessInsteadOfLeakingRouterBody() throws Exception {
+        String sensitiveRouterBody = "password=do-not-leak-raw-router-body";
+        ROUTER.respond(FIREWALL_ADDRESS_LISTS, 500, "{\"message\":\"" + sensitiveRouterBody + "\"}");
+
+        mockMvc.perform(get("/api/write-readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionEnabled").value(false))
+                .andExpect(jsonPath("$.readyForFutureExecution").value(false))
+                .andExpect(content().string(not(containsString(sensitiveRouterBody))))
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
     void mapsRouterAuthenticationFailureToASanitizedApiError() throws Exception {
         String password = "api-authentication-password-must-not-leak";
         ROUTER.respond(INTERFACES, 401, "{\"message\":\"denied " + password + "\"}");
@@ -328,6 +596,55 @@ class RouterOsReadOnlyApiIntegrationTest {
                   "comment":"defconf: fasttrack"
                 }]
                 """);
+        ROUTER.respondJson(FIREWALL_ADDRESS_LISTS, "[]");
+    }
+
+    private void saveClientPortForPhaseThree() throws Exception {
+        mockMvc.perform(put("/api/ports/ether2")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "friendlyName":"Clientes",
+                                  "description":"Metadata local para testes de Fase 3",
+                                  "network":"10.10.10.0/24",
+                                  "dhcpServer":"dhcp-cliente1",
+                                  "enabled":true,
+                                  "role":"CLIENT"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.managed").value(true));
+    }
+
+    private void stubSimpleQueues(String queues) {
+        ROUTER.respondJson(SIMPLE_QUEUES, queues);
+    }
+
+    private void assertReconciliation(String ownership, String reconciliationStatus, boolean conflict) throws Exception {
+        mockMvc.perform(get("/api/reconciliation"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resources[0].ownership").value(ownership))
+                .andExpect(jsonPath("$.resources[0].status").value(reconciliationStatus))
+                .andExpect(jsonPath("$.resources[0].conflict").value(conflict))
+                .andExpect(content().string(not(containsString("\".id\""))));
+    }
+
+    private void assertForeignFirewallUnblockPlan() throws Exception {
+        mockMvc.perform(post("/api/plans/unblock")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationType").value("UNBLOCK_DEVICE"))
+                .andExpect(jsonPath("$.ownership").value("FOREIGN"))
+                .andExpect(jsonPath("$.currentState.blocked").value(true))
+                .andExpect(jsonPath("$.changeRequired").value(true))
+                .andExpect(jsonPath("$.readyForFutureExecution").value(false))
+                .andExpect(jsonPath("$.executable").value(false))
+                .andExpect(jsonPath("$.conflicts[?(@.code == 'UNOWNED_BLOCK_RESOURCE')].resourceType")
+                        .value("FIREWALL_FILTER"))
+                .andExpect(jsonPath("$.conflicts[?(@.code == 'UNOWNED_BLOCK_RESOURCE')].ownership").value("FOREIGN"))
+                .andExpect(content().string(not(containsString("\".id\""))))
+                .andExpect(content().string(not(containsString("api-test-password"))));
     }
 
     private static Path createTemporaryDatabaseDirectory() {

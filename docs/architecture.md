@@ -1,11 +1,13 @@
 # Arquitetura — MikroTik Local Manager
 
-## Escopo atual: Fase 2 somente leitura
+## Escopo atual: Fase 3 — preparação de escrita segura
 
 A aplicação local lê dados de um RouterOS 7 por REST e preserva escrita apenas
-no SQLite local. Em modo real, o RouterOS é fonte de verdade para interfaces,
-leases, queues observadas e diagnóstico; SQLite é fonte de verdade para
-metadados escolhidos pelo operador e auditoria.
+no SQLite local. A Fase 3 acrescenta snapshot, ownership, reconciliation,
+write readiness e dry-run, todos observacionais. Em modo real, o RouterOS é
+fonte de verdade para interfaces, leases, queues, firewall e address lists
+observados; SQLite é fonte de verdade para metadados escolhidos pelo operador
+e auditoria.
 
 ```text
 Browser (localhost)
@@ -22,6 +24,12 @@ Spring Boot (127.0.0.1)
      ├── MockMikrotikGateway
      └── RouterOsRestGateway
          └── RouterOsRestClient → HTTPS GET /rest → RouterOS
+
+Spring services
+ ├── RouterSnapshotService (uma observação batched e imutável)
+ ├── ReconciliationService (comparação, sem correção)
+ ├── WriteReadinessService (diagnóstico futuro)
+ └── OperationPlanningService (dry-run, sem executor)
 ```
 
 O frontend não conhece JSON RouterOS, TLS, Basic Auth, paths REST ou credenciais.
@@ -68,11 +76,76 @@ GET /rest/ip/dhcp-server
 GET /rest/ip/dhcp-server/lease
 GET /rest/queue/simple
 GET /rest/ip/firewall/filter
+GET /rest/ip/firewall/address-list
 ```
 
 **RouterOS HTTP methods used: GET only.** Embora o RouterOS REST também suporte
-verbos mutáveis e comandos via POST, a Fase 2 não os chama.
+verbos mutáveis e comandos via POST, a Fase 3 não os chama.
 [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+
+## Snapshot, ownership e planos
+
+Uma ação de reconciliation, write readiness ou dry-run captura uma única
+janela observável dos recursos necessários. Interfaces, DHCP servers, DHCP
+leases, Simple Queues, firewall filters e address lists são buscados no máximo
+uma vez por snapshot e processados em memória; não existe uma request RouterOS
+por dispositivo. O endpoint combinado `GET /api/write-analysis`, usado pela UI,
+captura uma vez, deriva reconciliation e readiness do mesmo `RouterSnapshot` e
+assim não duplica as seis coleções. O status de conexão pode acrescentar uma
+leitura única de `system/resource`. O polling normal continua leve e não chama
+essa análise.
+
+```text
+RouterOS
+   │ GET
+   ▼
+RouterSnapshot
+   ├── Ownership analyzer
+   ├── Reconciliation
+   ├── Write readiness
+   └── Operation planner
+               │
+               ▼
+            Dry-run
+               │
+               X  nenhum executor e nenhuma escrita RouterOS
+```
+
+O snapshot contém instante de captura e fingerprint diagnóstico. Ambos tornam
+a natureza efêmera de um plano explícita, mas não são autorização nem lock.
+Qualquer execução de uma fase futura terá de reler e revalidar o estado, pois
+RouterOS pode mudar entre o check e o uso (TOCTOU).
+
+Ownership é definido por comentário completo esperado, nunca por prefixo, nome,
+MAC, IP, target ou .id. `MTMGR:DEVICE:…` (MAC canônico em maiúsculas e com
+hífens, por exemplo `AA-BB-CC-DD-EE-01`) e `MTMGR:PORT:…` são contratos
+centralizados em `ManagedResourceIdentifier`; recurso manual parecido é
+`FOREIGN` ou `UNKNOWN`, não é adotado. O nome convencionado de uma queue serve
+apenas para detectar colisão.
+
+A reconciliation distingue `IN_SYNC`, `DRIFTED`, `MISSING`, `CONFLICT`,
+`AMBIGUOUS_OWNERSHIP` e `NOT_APPLICABLE`. `DRIFTED` pressupõe ownership
+confirmado e configuração divergente; `CONFLICT` representa recurso
+foreign/não comprovado que compete pelo nome ou target, inclusive quando o
+target CIDR é igual, subnet, supernet ou sobreposto ao CIDR local, e bloqueia
+uma futura mutação. Encontrar dois comentários esperados iguais é ambiguidade
+bloqueante, e nunca seleciona silenciosamente um deles. Overlap é somente
+evidência de conflito; ownership continua dependendo do comentário exato.
+
+Readiness valida portas a partir do estado local: somente CLIENT habilitada é
+candidata às futuras operações de banda. WAN e CLIENT desabilitada podem ser
+`NOT_APPLICABLE` sem bloquear; CLIENT habilitada com CIDR ausente ou inválido
+produz `MANAGED_PORTS_VALID` bloqueante. A resposta combinada expõe o fingerprint
+do snapshot para permitir verificar que as duas visões pertencem à mesma leitura.
+
+O planner recebe uma intenção tipada, mas recompõe ownership, estado e
+preconditions a partir do snapshot e SQLite atuais. Suporta dry-run de
+`BLOCK_DEVICE`, `UNBLOCK_DEVICE`, `SET_PORT_SPEED` e `SET_DEVICE_SPEED`.
+Cada plano tem avisos/conflitos, `generatedAt` e fingerprint; é sempre
+`executable=false` na Fase 3. Um no-op pode ser `changeRequired=false` e não
+é tratado como erro. A criação do plano gera a auditoria funcional resumida
+`OPERATION_PLAN_CREATED`, sem payload, credenciais, JSON RouterOS ou dumps;
+reconciliation permanece efêmera para não poluir o histórico.
 
 ## Dados e correlação
 
@@ -118,8 +191,10 @@ isolada e gera warning sanitizado. `block-access=true` vira `BLOCKED`,
 `UNKNOWN`. O CIDR local funciona apenas como conferência posterior.
 [DHCP oficial](https://manual.mikrotik.com/docs/network-management/dhcp/)
 
-`RouterOsSimpleQueueMapper` observa somente queues cujo comentário é exatamente
-`MTMGR:PORT:<interface>`. Queue manual não é adotada. `max-limit` RouterOS é
+`RouterOsSimpleQueueMapper` observa queues e a reconciliation somente confirma
+ownership quando o comentário é exatamente `MTMGR:PORT:<interface>`. Queue
+manual não é adotada; target CIDR sobreposto à rede local gera conflito
+`FOREIGN` bloqueante, sem alterar ownership. `max-limit` RouterOS é
 `upload/download`, enquanto o domínio usa `download/upload`; a inversão ocorre
 uma única vez no parser da fronteira e tem teste de direção.
 [Queues oficiais](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
@@ -143,8 +218,9 @@ desnecessária a `/api/devices`. A API `GET /api/devices` continua disponível.
 | DHCP | DHCP servers + leases correlacionadas |
 | Queues | `queue/simple` |
 | FastTrack | `ip/firewall/filter` |
+| Address lists | `ip/firewall/address-list`, inventário do snapshot e correlação estreita de filtro manual ativo em `chain=forward` com `drop`/`reject` que referencia a entrada exata; `chain=input` não é bloqueio de cliente e nunca há decisão de estratégia ou remoção |
 
-FastTrack só é consultado em diagnóstico. Regra habilitada com
+FastTrack só é consultado em diagnóstico, readiness ou plano sob demanda. Regra habilitada com
 `action=fasttrack-connection` é informada, nunca alterada. Isso é relevante
 porque FastTrack pode ignorar Simple Queues e outras facilidades L3.
 [Packet Flow oficial](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
@@ -163,6 +239,8 @@ Em modo real, a segurança contra escrita acidental é redundante:
 4. `RouterOsRestGateway` sempre lança `WRITE_NOT_IMPLEMENTED` antes de rede
    para `setPortSpeed`, `setDeviceSpeed`, `blockDevice` e `unblockDevice`, mesmo
    se `writeEnabled=true`.
+5. Planner, reconciliation e readiness dependem somente de snapshots; não têm
+   mecanismo de execução, auto-reparo ou adoção de recurso.
 
 As mutações **locais** não passam pelo guard: metadados e configuração de portas
 continuam graváveis no SQLite.
@@ -188,7 +266,13 @@ tabela de erros e configuração.
 ## Fora do escopo
 
 Não há escrita RouterOS, tráfego instantâneo por monitor/POST, bloqueio real,
-alteração de DHCP, criação/alteração/remoção de queues, mudança de firewall ou
-FastTrack, nem configuração de bridge, IP, NAT, rota, VLAN ou DNS.
+alteração de DHCP, criação/alteração/remoção de queues ou address lists, mudança
+de firewall ou FastTrack, nem configuração de bridge, IP, NAT, rota, VLAN ou
+DNS. Não há executor, confirmação de execução, auto-reparo ou adoção de
+recursos.
+
+A estratégia de bloqueio permanece `UNDECIDED`: a Fase 4 deverá escolher entre
+DHCP `block-access` e firewall/address-list de acordo com a topologia real e a
+documentação RouterOS. A Fase 3 não escolhe nem implementa essa estratégia.
 
 Physical RouterOS validation: **not performed in this workspace.**

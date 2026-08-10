@@ -10,9 +10,11 @@ interface DeviceDetailsProps {
   onClose: () => void;
   onSave: (device: Device, friendlyName: string, notes: string, downloadBps: number, uploadBps: number) => void;
   onRequestBlock: (device: Device) => void;
+  onPreviewBlock?: (device: Device, block: boolean) => void;
+  onPreviewSpeed?: (device: Device, downloadBps: number, uploadBps: number) => void;
 }
 
-export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave, onRequestBlock }: DeviceDetailsProps) {
+export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave, onRequestBlock, onPreviewBlock, onPreviewSpeed }: DeviceDetailsProps) {
   const [friendlyName, setFriendlyName] = useState('');
   const [notes, setNotes] = useState('');
   const [download, setDownload] = useState('');
@@ -46,6 +48,22 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
     onSave(device, friendlyName, notes, parsedDownload.bps, parsedUpload.bps);
   };
 
+  const previewSpeed = () => {
+    if (!onPreviewSpeed) return;
+    if (readOnly) {
+      onPreviewSpeed(device, device.downloadLimitBps, device.uploadLimitBps);
+      return;
+    }
+    const parsedDownload = parseMbps(download);
+    const parsedUpload = parseMbps(upload);
+    setErrors({
+      download: parsedDownload.valid ? undefined : parsedDownload.error,
+      upload: parsedUpload.valid ? undefined : parsedUpload.error,
+    });
+    if (!parsedDownload.valid || !parsedUpload.valid) return;
+    onPreviewSpeed(device, parsedDownload.bps, parsedUpload.bps);
+  };
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="device-dialog" role="dialog" aria-modal="true" aria-labelledby="device-details-title">
@@ -67,12 +85,16 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
             <label>Limite download<div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-label="Limite de download em Mbps" aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'device-download-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.download && <small id="device-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
             <label>Limite upload<div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-label="Limite de upload em Mbps" aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'device-upload-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.upload && <small id="device-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
           </div>
+          {onPreviewSpeed && <button type="button" className="button secondary compact plan-preview-button" onClick={previewSpeed} disabled={busy}>Visualizar plano de limite</button>}
           <div className="dialog-actions split-actions">
-            <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
-              <button type="button" className={device.blocked ? 'button secondary' : 'button danger'} onClick={() => onRequestBlock(device)} disabled={busy || readOnly}>
-                {device.blocked ? 'Liberar acesso' : 'Bloquear dispositivo'}
-              </button>
-            </span>
+            <div className="router-action-group">
+              <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
+                <button type="button" className={device.blocked ? 'button secondary' : 'button danger'} onClick={() => onRequestBlock(device)} disabled={busy || readOnly}>
+                  {device.blocked ? 'Liberar acesso' : 'Bloquear dispositivo'}
+                </button>
+              </span>
+              {onPreviewBlock && <button type="button" className="button secondary" onClick={() => onPreviewBlock(device, !device.blocked)} disabled={busy}>Visualizar plano</button>}
+            </div>
             <button type="submit" className="button primary" disabled={busy}>{busy ? 'Salvando…' : readOnly ? 'Salvar metadata local' : 'Salvar alterações'}</button>
           </div>
         </form>

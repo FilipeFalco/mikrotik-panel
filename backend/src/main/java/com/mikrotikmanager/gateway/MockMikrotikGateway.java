@@ -5,7 +5,13 @@ import com.mikrotikmanager.domain.GatewayDiagnosticCheck;
 import com.mikrotikmanager.domain.GatewayDiagnostics;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
 import com.mikrotikmanager.domain.RouterDevice;
+import com.mikrotikmanager.domain.RouterAddressListEntry;
+import com.mikrotikmanager.domain.RouterDhcpLease;
+import com.mikrotikmanager.domain.RouterDhcpServer;
+import com.mikrotikmanager.domain.RouterFirewallFilter;
 import com.mikrotikmanager.domain.RouterInterface;
+import com.mikrotikmanager.domain.RouterSimpleQueue;
+import com.mikrotikmanager.domain.RouterSnapshot;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.domain.TrafficRate;
 
@@ -19,12 +25,13 @@ import java.util.Map;
 import java.util.Optional;
 
 /** In-memory RouterOS substitute used for local development and automated tests. */
-public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagnosticsGateway {
+public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagnosticsGateway, RouterSnapshotReader {
     private final String host;
     private final int port;
     private final Map<String, RouterInterface> interfaces = new LinkedHashMap<>();
     private final Map<String, MockDeviceState> devices = new LinkedHashMap<>();
     private final Map<String, SpeedLimit> portSpeeds = new LinkedHashMap<>();
+    private final Map<String, String> portNetworks = new LinkedHashMap<>();
 
     public MockMikrotikGateway(String host, int port) {
         this.host = host;
@@ -77,6 +84,30 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
         return portSpeeds.getOrDefault(interfaceName, SpeedLimit.UNLIMITED);
     }
 
+    /** Returns a deterministic local fixture snapshot without network I/O. */
+    @Override
+    public synchronized RouterSnapshot captureSnapshot() {
+        Map<String, String> serverInterfaces = new LinkedHashMap<>();
+        devices.values().forEach(device -> serverInterfaces.putIfAbsent(device.dhcpServer, device.interfaceName));
+        List<RouterDhcpServer> servers = serverInterfaces.entrySet().stream()
+                .map(entry -> new RouterDhcpServer("mock-" + entry.getKey(), entry.getKey(), entry.getValue(), false))
+                .toList();
+        List<RouterDhcpLease> leases = devices.values().stream()
+                .map(device -> new RouterDhcpLease(device.leaseId, device.macAddress, device.ipAddress, device.dhcpServer,
+                        device.interfaceName, device.status == DeviceStatus.ONLINE || device.blocked ? "bound" : "waiting",
+                        device.blocked, device.leaseComment, true, false))
+                .toList();
+        List<RouterSimpleQueue> queues = portSpeeds.entrySet().stream()
+                .map(entry -> new RouterSimpleQueue("mock-queue-" + entry.getKey(),
+                        ManagedResourceIdentifier.expectedPortQueueName(entry.getKey()),
+                        ManagedResourceIdentifier.expectedPortComment(entry.getKey()), portNetworks.get(entry.getKey()),
+                        entry.getValue(), false, false))
+                .toList();
+        return new RouterSnapshot(Instant.now(), List.copyOf(interfaces.values()), servers, leases, listDevices(), queues,
+                List.of(new RouterFirewallFilter("mock-fasttrack", "fasttrack-connection", "forward", "mock fixture", false, false)),
+                List.<RouterAddressListEntry>of());
+    }
+
     @Override
     public synchronized void setPortSpeed(String interfaceName, SpeedLimit speedLimit) {
         ensureInterface(interfaceName);
@@ -122,6 +153,9 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
         portSpeeds.put("ether2", new SpeedLimit(100_000_000L, 20_000_000L));
         portSpeeds.put("ether3", new SpeedLimit(200_000_000L, 50_000_000L));
         portSpeeds.put("ether4", new SpeedLimit(500_000_000L, 100_000_000L));
+        portNetworks.put("ether2", "10.10.10.0/24");
+        portNetworks.put("ether3", "10.10.20.0/24");
+        portNetworks.put("ether4", "10.10.30.0/24");
 
         addDevice("*A1", "AA:BB:CC:DD:EE:01", "Galaxy-S25", "10.10.10.21", "dhcp-joao", "ether2",
                 DeviceStatus.ONLINE, false, new SpeedLimit(20_000_000L, 5_000_000L), new TrafficRate(13_200_000L, 1_700_000L), "Celular principal");
