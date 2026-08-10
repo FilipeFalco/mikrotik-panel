@@ -5,9 +5,11 @@ import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
 import com.mikrotikmanager.gateway.routeros.dto.RouterOsSimpleQueueDto;
 
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Maps only explicitly application-owned RouterOS Simple Queues.
@@ -34,6 +36,7 @@ public final class RouterOsSimpleQueueMapper {
         }
 
         Map<String, SpeedLimit> portSpeeds = new LinkedHashMap<>();
+        Set<String> ambiguousPorts = new HashSet<>();
         for (RouterOsSimpleQueueDto queue : queues) {
             if (queue == null || isDisabledOrUntrustworthy(queue.disabled())) {
                 continue;
@@ -49,9 +52,18 @@ public final class RouterOsSimpleQueueMapper {
                 continue;
             }
 
-            // Duplicate exact ownership markers are ambiguous; retain the
-            // first RouterOS list entry rather than silently overwriting it.
-            portSpeeds.putIfAbsent(interfaceName, speedLimit.get());
+            // Two exact comments for the same port are unsafe even for a
+            // read-only presentation. Do not pick a RouterOS list entry; the
+            // reconciliation report will expose this as ambiguous ownership.
+            if (ambiguousPorts.contains(interfaceName)) {
+                continue;
+            }
+            if (portSpeeds.containsKey(interfaceName)) {
+                portSpeeds.remove(interfaceName);
+                ambiguousPorts.add(interfaceName);
+                continue;
+            }
+            portSpeeds.put(interfaceName, speedLimit.get());
         }
         return Map.copyOf(portSpeeds);
     }

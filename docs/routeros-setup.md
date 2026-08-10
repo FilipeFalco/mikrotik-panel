@@ -1,8 +1,9 @@
-# Preparação manual do RouterOS para a Fase 2
+# Preparação manual do RouterOS para a Fase 3
 
 Esta etapa prepara manualmente acesso REST restrito para o backend local. A
-aplicação da Fase 2 não modifica RouterOS: depois desta preparação ela emite
-somente HTTPS `GET` para `/rest`.
+aplicação da Fase 3 não modifica RouterOS: depois desta preparação ela emite
+somente HTTPS `GET` para `/rest`, inclusive durante readiness, reconciliation
+e dry-run.
 
 Antes de futuras fases de escrita, mantenha um backup/export atualizado do
 RouterOS. Mesmo sendo leitura nesta fase, a preparação de serviço, certificado
@@ -49,11 +50,15 @@ as policies mínimas `read,rest-api` e sem `write`:
 ```
 
 Não conceda `write`, `policy`, `reboot`, `password`, `ssh`, `winbox`, `test`,
-`sniff` ou `sensitive` para a Fase 2. A documentação explica que `read` permite
+`sniff` ou `sensitive` para a Fase 3. A documentação explica que `read` permite
 consulta da configuração e `rest-api` permite REST; `write` concede alteração.
 Ela também recomenda grupo customizado, pois o grupo padrão `read` inclui mais
 policies do que esta aplicação precisa. A restrição `address` do usuário reduz
 as origens que podem autenticar. [Users e policies oficiais](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+
+Não altere o grupo para incluir `write` “para testar” a Fase 3. A futura Fase 4
+decidirá as permissões mínimas somente quando existir uma estratégia de bloqueio
+aprovada e uma camada real de execução revalidada.
 
 Guarde a senha apenas no arquivo local `.env`; não a copie para documentação,
 SQLite, frontend, log ou Git.
@@ -121,7 +126,7 @@ Com conexão bem-sucedida, a topbar mostra RouterOS 7.x e modo somente leitura.
 Falhas de autenticação, TLS, rede e payload retornam mensagens sanitizadas; elas
 não interrompem SQLite, histórico ou configurações locais.
 
-Durante a Fase 2, os únicos recursos RouterOS lidos são:
+Durante a Fase 3, os recursos RouterOS lidos são:
 
 ```text
 GET /rest/system/resource
@@ -130,13 +135,37 @@ GET /rest/ip/dhcp-server
 GET /rest/ip/dhcp-server/lease
 GET /rest/queue/simple
 GET /rest/ip/firewall/filter
+GET /rest/ip/firewall/address-list
 ```
 
-Não use `POST`, `PUT`, `PATCH` ou `DELETE` para testes desta integração. As
-leituras de firewall/FastTrack ocorrem apenas no diagnóstico sob demanda, não a
-cada polling.
+Não use `POST`, `PUT`, `PATCH` ou `DELETE` para testes desta integração. A
+leitura de firewall/FastTrack ocorre no diagnóstico e nas análises sob demanda;
+address lists são capturadas somente no snapshot de reconciliation, readiness
+ou dry-run. Nenhuma dessas leituras entra no polling.
 
-## 7. Conferir DHCP e configurar metadados locais das portas
+## 7. Analisar prontidão sem executar
+
+Em **Configurações → Segurança de escrita**, use a análise de reconciliation,
+write readiness ou **Visualizar plano**. Elas podem fazer GET das coleções acima
+para construir um snapshot e comparar o estado RouterOS ao SQLite local, mas não
+enviam nenhuma escrita ao roteador.
+
+A simulação aceita uma intenção de bloqueio/liberação ou de limite de
+porta/dispositivo. O resultado mostra preconditions, avisos, conflitos e um
+fingerprint do estado observado. Mesmo que a análise esteja limpa, o plano é
+somente diagnóstico e continua `executable=false`. Não há botão de “Confirmar e
+executar”.
+
+FastTrack ativo é um aviso forte para futuras operações de banda porque pode
+contornar Simple Queues. Não desabilite, reordene ou crie exceções nessa regra
+por causa da Fase 3. [Packet Flow](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/#fasttrack)
+e [Queues](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/) oficiais.
+
+O mecanismo de bloqueio real permanece **UNDECIDED**. A Fase 4 avaliará DHCP
+`block-access` versus firewall/address-list para a topologia real; nesta fase
+não faça `make-static`, não altere lease e não crie address list ou regra.
+
+## 8. Conferir DHCP e configurar metadados locais das portas
 
 Para checagem manual, sem alterar nada:
 
@@ -165,12 +194,20 @@ O papel `WAN` define qual interface o dashboard apresenta como Internet, e
 o papel local não altera rota padrão, NAT, DHCP client, firewall ou interface
 list no equipamento.
 
-## 8. Queues e FastTrack: observar, não alterar
+## 9. Queues, firewall e ownership: observar, não alterar
 
-Os diagnósticos podem ler Simple Queues e firewall filters. Eles não criam,
-adotam, alteram, removem, movem ou reordenam queues, leases ou regras. Uma queue
-manual só é considerada gerenciada se o comentário for exatamente
-`MTMGR:PORT:<interface>`.
+Os diagnósticos podem ler Simple Queues e firewall filters; as análises de
+snapshot também capturam address lists. No dry-run de liberação, um filtro
+ativo `drop`/`reject` que referencia exatamente o IP (diretamente ou por uma
+address list com a entrada exata) é tratado somente como bloqueio externo
+possível. Sem o comentário exato de ownership do dispositivo, ele é `FOREIGN`
+e não será removido. Isso não escolhe a estratégia definitiva de bloqueio nem
+faz address list isolada provar um bloqueio. Esses fluxos não criam, adotam,
+alteram, removem, movem ou reordenam queues, leases, entradas ou regras. Uma queue manual só é considerada
+gerenciada se o comentário for exatamente `MTMGR:PORT:<interface>` para a porta
+avaliada; um prefixo `MTMGR:`, nome, MAC, IP ou target parecido não é ownership.
+Recursos duplicados com o mesmo comentário esperado são ambíguos e bloqueiam
+futura execução; o painel não escolhe um deles.
 
 FastTrack ativo é reportado porque pode contornar Simple Queues. Não desabilite
 nem mova a regra por causa desta fase; avalie manualmente a topologia antes de
@@ -178,12 +215,13 @@ qualquer fase futura de limite. [Queues](https://manual.mikrotik.com/docs/firewa
 e [Packet Flow](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
 oficiais.
 
-## 9. O que permanece fora do escopo
+## 10. O que permanece fora do escopo
 
-Mesmo se `MIKROTIK_WRITE_ENABLED=true` for definido por engano, a Fase 2 não
+Mesmo se `MIKROTIK_WRITE_ENABLED=true` for definido por engano, a Fase 3 não
 implementa escrita RouterOS. Não há bloqueio real, alteração de velocidade,
 `make-static`, queue creation/update/removal, mudança de FastTrack, firewall,
-bridge, IP, DHCP, NAT, rota, VLAN, DNS ou interface.
+address list, bridge, IP, DHCP, NAT, rota, VLAN, DNS ou interface. Não há
+executor de plano, auto-reparo, adoção de recurso ou confirmação de escrita.
 
 `MIKROTIK_MOCK_MODE=true` continua totalmente local e não precisa de rede. Em
 modo real, nomes amigáveis, observações e configuração de portas no SQLite
@@ -198,4 +236,6 @@ Physical RouterOS validation: **not performed in this workspace.**
 - [User — RouterOS Manual](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 - [DHCP — RouterOS Manual](https://manual.mikrotik.com/docs/network-management/dhcp/)
 - [Queues — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
+- [Address Lists — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/address-lists/)
 - [Packet Flow in RouterOS — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+- [Decisões da Fase 3 no projeto](routeros-write-readiness.md)

@@ -9,11 +9,12 @@ interface PortDetailProps {
   saving: boolean;
   readOnly?: boolean;
   onSaveSpeed: (port: Port, downloadBps: number, uploadBps: number) => void;
+  onPreviewSpeed?: (port: Port, downloadBps: number, uploadBps: number) => void;
   onDeviceSelect: (device: Device) => void;
   onBack: () => void;
 }
 
-export function PortDetail({ port, saving, readOnly = false, onSaveSpeed, onDeviceSelect, onBack }: PortDetailProps) {
+export function PortDetail({ port, saving, readOnly = false, onSaveSpeed, onPreviewSpeed, onDeviceSelect, onBack }: PortDetailProps) {
   const [download, setDownload] = useState(bpsToMbps(port.downloadLimitBps));
   const [upload, setUpload] = useState(bpsToMbps(port.uploadLimitBps));
   const [errors, setErrors] = useState<{ download?: string; upload?: string }>({});
@@ -37,6 +38,22 @@ export function PortDetail({ port, saving, readOnly = false, onSaveSpeed, onDevi
     onSaveSpeed(port, parsedDownload.bps, parsedUpload.bps);
   };
 
+  const preview = () => {
+    if (!onPreviewSpeed) return;
+    if (readOnly) {
+      onPreviewSpeed(port, port.downloadLimitBps, port.uploadLimitBps);
+      return;
+    }
+    const parsedDownload = parseMbps(download);
+    const parsedUpload = parseMbps(upload);
+    setErrors({
+      download: parsedDownload.valid ? undefined : parsedDownload.error,
+      upload: parsedUpload.valid ? undefined : parsedUpload.error,
+    });
+    if (!parsedDownload.valid || !parsedUpload.valid) return;
+    onPreviewSpeed(port, parsedDownload.bps, parsedUpload.bps);
+  };
+
   return (
     <div className="page-stack">
       <button type="button" className="back-link" onClick={onBack}>← Voltar ao dashboard</button>
@@ -57,9 +74,12 @@ export function PortDetail({ port, saving, readOnly = false, onSaveSpeed, onDevi
         <form onSubmit={save} className="speed-form">
           <label>Download <div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-label="Limite de download em Mbps" aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'port-download-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.download && <small id="port-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
           <label>Upload <div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-label="Limite de upload em Mbps" aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'port-upload-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.upload && <small id="port-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
-          <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
-            <button type="submit" className="button primary" disabled={saving || readOnly}>{saving ? 'Salvando…' : 'Salvar limite'}</button>
-          </span>
+          <div className="router-action-group">
+            <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
+              <button type="submit" className="button primary" disabled={saving || readOnly}>{saving ? 'Salvando…' : 'Salvar limite'}</button>
+            </span>
+            {onPreviewSpeed && <button type="button" className="button secondary" onClick={preview} disabled={saving}>Visualizar plano</button>}
+          </div>
         </form>
       </section>
 

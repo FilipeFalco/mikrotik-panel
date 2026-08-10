@@ -68,3 +68,27 @@ it('saves independently edited download and upload limits when RouterOS controls
 
   expect(onSave).toHaveBeenCalledWith(device, '', '', 80_000_000, 15_000_000);
 });
+
+it('offers a dry-run preview beside disabled real RouterOS controls', () => {
+  const onPreviewBlock = vi.fn();
+  const onPreviewSpeed = vi.fn();
+  render(
+    <DeviceDetails
+      device={device}
+      busy={false}
+      readOnly
+      onClose={vi.fn()}
+      onSave={vi.fn()}
+      onRequestBlock={vi.fn()}
+      onPreviewBlock={onPreviewBlock}
+      onPreviewSpeed={onPreviewSpeed}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano de limite' }));
+
+  expect(onPreviewBlock).toHaveBeenCalledWith(device, true);
+  expect(onPreviewSpeed).toHaveBeenCalledWith(device, 100_000_000, 20_000_000);
+  expect(screen.getByRole('button', { name: 'Bloquear dispositivo' })).toBeDisabled();
+});

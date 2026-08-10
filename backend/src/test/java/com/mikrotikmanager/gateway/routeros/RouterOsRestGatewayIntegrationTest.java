@@ -15,6 +15,8 @@ import org.springframework.web.client.RestClient;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -26,6 +28,7 @@ class RouterOsRestGatewayIntegrationTest {
     private static final String DHCP_LEASES = "/rest/ip/dhcp-server/lease";
     private static final String SIMPLE_QUEUES = "/rest/queue/simple";
     private static final String FIREWALL_FILTERS = "/rest/ip/firewall/filter";
+    private static final String FIREWALL_ADDRESS_LISTS = "/rest/ip/firewall/address-list";
 
     @Test
     void mapsRealisticReadOnlyRouterOsFixturesAndUsesOnlyGetRequests() {
@@ -85,6 +88,35 @@ class RouterOsRestGatewayIntegrationTest {
             assertThat(fake.requests()).hasSize(2);
             assertThat(fake.requestCount(DHCP_SERVERS)).isEqualTo(1);
             assertThat(fake.requestCount(DHCP_LEASES)).isEqualTo(1);
+            assertThat(fake.requests()).allSatisfy(request -> assertThat(request.method()).isEqualTo("GET"));
+        }
+    }
+
+    @Test
+    void capturesOneBatchedSnapshotWithConstantRouterRequestCountForOneHundredLeases() {
+        try (FakeRouterOsServer fake = FakeRouterOsServer.start()) {
+            stubHealthyRouter(fake);
+            RouterOsRestGateway gateway = gateway(fake, false);
+
+            fake.respondJson(DHCP_LEASES, largeLeaseFixture(1));
+            var oneLeaseSnapshot = gateway.captureSnapshot();
+            int oneLeaseRequestCount = fake.requests().size();
+            fake.clearRequests();
+
+            fake.respondJson(DHCP_LEASES, largeLeaseFixture(100));
+            var oneHundredLeaseSnapshot = gateway.captureSnapshot();
+
+            assertThat(oneLeaseSnapshot.dhcpLeases()).hasSize(1);
+            assertThat(oneHundredLeaseSnapshot.dhcpLeases()).hasSize(100);
+            assertThat(oneHundredLeaseSnapshot.devices()).hasSize(100);
+            assertThat(fake.requests()).hasSize(oneLeaseRequestCount);
+            assertThat(fake.requests()).hasSize(6);
+            assertThat(fake.requestCount(INTERFACES)).isEqualTo(1);
+            assertThat(fake.requestCount(DHCP_SERVERS)).isEqualTo(1);
+            assertThat(fake.requestCount(DHCP_LEASES)).isEqualTo(1);
+            assertThat(fake.requestCount(SIMPLE_QUEUES)).isEqualTo(1);
+            assertThat(fake.requestCount(FIREWALL_FILTERS)).isEqualTo(1);
+            assertThat(fake.requestCount(FIREWALL_ADDRESS_LISTS)).isEqualTo(1);
             assertThat(fake.requests()).allSatisfy(request -> assertThat(request.method()).isEqualTo("GET"));
         }
     }
@@ -272,6 +304,17 @@ class RouterOsRestGatewayIntegrationTest {
                   }
                 ]
                 """);
+        fake.respondJson(FIREWALL_ADDRESS_LISTS, "[]");
+    }
+
+    private static String largeLeaseFixture(int leaseCount) {
+        return IntStream.range(0, leaseCount)
+                .mapToObj(index -> """
+                        {".id":"*%s","address":"10.10.10.%s","mac-address":"AA:BB:CC:DD:EE:%02X",
+                         "host-name":"Device %s","server":"dhcp-cliente1","status":"bound",
+                         "block-access":"false","dynamic":"true","disabled":"false"}
+                        """.formatted(index, (index % 250) + 1, index, index))
+                .collect(Collectors.joining(",", "[", "]"));
     }
 
     @FunctionalInterface

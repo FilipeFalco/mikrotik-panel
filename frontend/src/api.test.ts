@@ -31,3 +31,22 @@ it('sends a local port configuration PUT with an encoded interface name and role
     }),
   }));
 });
+
+it('posts only untrusted dry-run intent to local plan endpoints', async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ executable: false }) }) as Response);
+  vi.stubGlobal('fetch', fetchMock);
+
+  await api.planBlockDevice('AA:BB:CC:DD:EE:01');
+  await api.planDeviceSpeed('AA:BB:CC:DD:EE:01', 50_000_000, 10_000_000);
+  await api.planPortSpeed('sfp/sfpplus1', 100_000_000, 20_000_000);
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/plans/block', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ macAddress: 'AA:BB:CC:DD:EE:01' }),
+  }));
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/plans/device-speed', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ macAddress: 'AA:BB:CC:DD:EE:01', downloadBps: 50_000_000, uploadBps: 10_000_000 }),
+  }));
+  expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/plans/port-speed', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ interfaceName: 'sfp/sfpplus1', downloadBps: 100_000_000, uploadBps: 20_000_000 }),
+  }));
+});
