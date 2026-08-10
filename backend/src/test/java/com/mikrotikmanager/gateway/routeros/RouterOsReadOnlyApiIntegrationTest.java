@@ -354,6 +354,35 @@ class RouterOsReadOnlyApiIntegrationTest {
     }
 
     @Test
+    void combinedWriteAnalysisUsesOneSnapshotAndDoesNotDuplicateRouterOsCollections() throws Exception {
+        saveClientPortForPhaseThree();
+        ROUTER.clearRequests();
+
+        mockMvc.perform(get("/api/write-analysis"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshotFingerprint").isString())
+                .andExpect(jsonPath("$.readiness.executionEnabled").value(false))
+                .andExpect(jsonPath("$.readiness.summary.managedPorts").value(1))
+                .andExpect(jsonPath("$.readiness.summary.validManagedPorts").value(1))
+                .andExpect(jsonPath("$.reconciliation.resources[0].resourceType").value("SIMPLE_QUEUE"))
+                .andExpect(jsonPath("$.reconciliation.snapshotFingerprint").isString())
+                .andExpect(content().string(not(containsString("api-test-password"))));
+
+        // Readiness and reconciliation share one snapshot: each RouterOS
+        // collection is read at most once, plus one /system/resource for the
+        // connection status probe. No collection is duplicated.
+        assertThat(ROUTER.requestCount(INTERFACES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(DHCP_SERVERS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(DHCP_LEASES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(SIMPLE_QUEUES)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(FIREWALL_FILTERS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(FIREWALL_ADDRESS_LISTS)).isEqualTo(1);
+        assertThat(ROUTER.requestCount(SYSTEM_RESOURCE)).isLessThanOrEqualTo(1);
+        assertThat(ROUTER.requests()).allSatisfy(request ->
+                assertThat(request.method()).isEqualTo("GET"));
+    }
+
+    @Test
     void returnsStructuredInvalidDeviceDryRunAndPreservesTheParentLimitInvariant() throws Exception {
         saveClientPortForPhaseThree();
         ROUTER.clearRequests();

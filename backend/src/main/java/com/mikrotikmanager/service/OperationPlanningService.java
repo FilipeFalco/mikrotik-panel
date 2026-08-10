@@ -350,8 +350,10 @@ public class OperationPlanningService {
      * Detects only already-observed blocking candidates. It never selects a
      * future blocking mechanism: DHCP block-access remains the only direct
      * lease signal, while firewall/address-list matching is deliberately
-     * narrow and exists solely to keep a future unblock away from manual
-     * rules.
+     * narrow and restricted to {@code chain=forward} {@code drop}/{@code reject}
+     * so a {@code chain=input} rule protecting the MikroTik itself is never
+     * mistaken for a client block. This exists solely to keep a future unblock
+     * away from manual forward rules.
      */
     private List<BlockResource> detectBlockResources(RouterDhcpLease lease, RouterDevice device,
                                                       RouterSnapshot snapshot, String normalizedMac) {
@@ -370,7 +372,7 @@ public class OperationPlanningService {
             return List.copyOf(resources);
         }
         snapshot.firewallFilters().stream()
-                .filter(RouterFirewallFilter::isActiveBlockingAction)
+                .filter(RouterFirewallFilter::isActiveForwardBlockingAction)
                 .filter(filter -> filterTargetsIp(filter, ipAddress, snapshot.addressListEntries()))
                 .forEach(filter -> resources.add(new BlockResource("FIREWALL_FILTER", "Regra de firewall", ipAddress,
                         blockingOwnership(filter.comment(), normalizedMac))));

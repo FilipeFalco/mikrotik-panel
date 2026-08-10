@@ -44,7 +44,7 @@ auto-reparo, adoção de recurso ou botão de executar nesta fase.
 | Policies do usuário | O grupo dedicado permanece com read,rest-api, sem write. read concede acesso de consulta e write concede alteração de configuração; não se pede nem se tenta conceder write na Fase 3. | [Users e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/) |
 | DHCP leases | Leases são observadas em /ip/dhcp-server/lease, inclusive MAC, IP, server, status, dynamic e block-access. A documentação registra block-access como capacidade do lease, mas a Fase 3 não faz set, make-static, rate-limit ou remoção. | [DHCP — leases](https://manual.mikrotik.com/docs/network-management/dhcp/#leases) |
 | Simple Queues | São observadas em /queue/simple por name, target, comment, max-limit, disabled e dynamic. Queue é um mecanismo possível de QoS futuro, não uma operação desta fase. | [Queues](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/), [referência queue/simple](https://manual.mikrotik.com/docs/cli-reference/queue/simple/) |
-| Firewall e address lists | Filtros são observados para detectar FastTrack. No dry-run de liberação, um filtro ativo `drop`/`reject` que referencia exatamente o IP do dispositivo (ou uma address list que contém exatamente esse IP) é tratado apenas como candidato externo de bloqueio: sem o comentário exato esperado, ele é `FOREIGN` e nunca será removido. Isso não escolhe estratégia de bloqueio nem cria, altera, move ou remove regra/entrada. | [Filter](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/filter/), [Address lists](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/address-lists/) |
+| Firewall e address lists | Filtros são observados para detectar FastTrack. No dry-run de liberação, somente `chain=forward` com `action=drop` ou `reject`, não desabilitado nem dinâmico, e que referencia exatamente o IP do dispositivo (ou uma address list que contém exatamente esse IP) é tratado como candidato externo de bloqueio. `chain=input`, `output`, `raw`, `mangle` e `nat` não representam bloqueio do tráfego do cliente. Sem o comentário exato esperado, o candidato é `FOREIGN` e nunca será removido. | [Filter](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/filter/), [Address lists](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/address-lists/) |
 | FastTrack | Uma regra ativa action=fasttrack-connection gera alerta forte para planos de banda. O RouterOS documenta que FastTrack pode contornar Simple Queues; o painel não desabilita, move nem cria exceções de FastTrack. | [Packet Flow — FastTrack](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/#fasttrack) |
 
 Campos como comment, .id, disabled e dynamic são preservados porque afetam a
@@ -70,15 +70,22 @@ Cada coleção é buscada no máximo uma vez por snapshot e depois é processada
 memória. Portanto, analisar um ou cem leases não cria uma chamada por
 dispositivo (sem N+1). Firewall é usado para o status de FastTrack e, de forma
 deliberadamente estreita, para impedir que um dry-run de liberação trate um
-filtro manual `drop`/`reject` de IP exato como removível. Address lists só
-participam dessa proteção quando são referenciadas por esse filtro e contêm a
-entrada exata; isoladamente, não definem bloqueio. Ambas as leituras continuam
-sob demanda e não entram no polling normal do dashboard.
+filtro manual `forward` `drop`/`reject` de IP exato como removível. Um filtro
+`input` continua sendo tráfego destinado ao próprio MikroTik e não bloqueia o
+cliente para esta análise. Address lists só participam dessa proteção quando
+são referenciadas por um filtro `forward` elegível e contêm a entrada exata;
+isoladamente, não definem bloqueio. Ambas as leituras continuam sob demanda e
+não entram no polling normal do dashboard.
 
 O snapshot recebe capturedAt e uma impressão digital diagnóstica
 (snapshotFingerprint) sem credenciais ou dump bruto. A impressão digital serve
 para tornar visível que o plano foi criado sobre um estado observado; ela não é
 uma autorização de escrita nem um lock.
+
+Na tela de análise, `GET /api/write-analysis` captura uma única observação e
+produz `reconciliation` e `readiness` a partir dela. O fingerprint no envelope
+e o fingerprint da reconciliação identificam essa mesma observação; o status de
+conexão pode acrescentar no máximo uma leitura de `/rest/system/resource`.
 
 ## Ownership explícito e conservador
 
@@ -106,8 +113,12 @@ um .id, MAC, IP ou target coincidente não comprova que o recurso é do painel.
 Uma convenção futura de nome, como mtmgr-port-<interface-segura>, ajuda a
 detectar colisão, mas **não é evidência de ownership**. Uma queue manual com
 esse nome continua FOREIGN e conflita se o painel precisar desse nome. Da mesma
-maneira, uma queue manual com o mesmo target/CIDR, IP ou MAC relevante é um
-possível conflito; nunca é adotada automaticamente.
+maneira, uma queue manual cujo target CIDR seja igual, subnet, supernet ou
+qualquer outra rede/IP que se sobreponha ao CIDR local é `FOREIGN` e produz
+`CONFLICT` bloqueante. A comparação usa intervalos IPv4 determinísticos, sem
+DNS; target em sintaxe não suportada nunca é adotado e só é marcado como
+relacionado quando há evidência conservadora, como interface, target amplo ou
+token literal correspondente.
 
 Não existe operação de “adotar”, “assumir”, “corrigir” ou “sincronizar” um
 recurso manual nesta fase. Esse tipo de fluxo exigirá desenho, autorização e
@@ -138,7 +149,7 @@ reconciliação e comparado a um limite solicitado apenas no respectivo dry-run.
 | FOREIGN | Um recurso relevante tem ownership não comprovado/foreign, mas ainda não colide com uma identidade operacional requerida. Ele não é adotado. Quando compete por nome ou target, o status é CONFLICT. |
 | CONFLICT | Um recurso foreign/não comprovado usa identidade operacional que o painel pretende usar, como nome ou target. Bloqueia futura execução. |
 | AMBIGUOUS_OWNERSHIP | Mais de um recurso possui o mesmo comentário exato esperado. Nunca se escolhe o primeiro; a condição é bloqueante. |
-| NOT_APPLICABLE | O recurso local não é elegível para aquela análise, por exemplo porta sem papel CLIENT, desabilitada ou sem CIDR. |
+| NOT_APPLICABLE | O recurso local não é elegível para aquela análise, por exemplo porta sem papel CLIENT ou CLIENT desabilitada. Um CLIENT habilitado sem CIDR é contado no readiness, mas falha a validação de porta. |
 
 DRIFTED e CONFLICT têm tratamentos diferentes. Uma queue MTMGR:PORT:ether2 com
 target errado ainda é MANAGED e está DRIFTED; uma queue manual no mesmo target é
@@ -153,6 +164,13 @@ prometer que a escrita está habilitada. Ele cobre conectividade RouterOS, modo
 mock/real, estado da flag, disponibilidade de interfaces/DHCP/queues, análise
 de ownership, conhecimento do FastTrack e contagens de recursos gerenciados, em
 sincronia, com drift, ausentes, conflitos e ownership ambíguo.
+
+Para a validação de futuras operações de banda, `managedPorts` (mantido por
+compatibilidade no contrato) significa somente portas locais `CLIENT` habilitadas.
+WAN e CLIENT desabilitada podem gerar `NOT_APPLICABLE` e não bloqueiam readiness.
+`validManagedPorts` conta as CLIENT habilitadas cujo CIDR está presente e é
+válido; uma CLIENT habilitada sem CIDR ou com CIDR inválido permanece na primeira
+contagem e torna `MANAGED_PORTS_VALID` `BLOCKING`.
 
 Mesmo quando todos os checks forem bons, a mensagem correta é:
 
@@ -199,6 +217,7 @@ POST RouterOS e não levam body de estado confiável ao roteador:
 | --- | --- |
 | GET /api/reconciliation | Executa a comparação observacional sob demanda. |
 | GET /api/write-readiness | Obtém o diagnóstico global de prontidão. |
+| GET /api/write-analysis | Captura um snapshot e devolve readiness e reconciliation coerentes, derivados da mesma observação. |
 | POST /api/plans/block | macAddress do dispositivo a analisar. |
 | POST /api/plans/unblock | macAddress do dispositivo a analisar. |
 | POST /api/plans/port-speed | interfaceName, downloadBps e uploadBps solicitados. |
@@ -220,8 +239,9 @@ Preconditions usam severidade INFO, WARNING ou BLOCKING. Exemplos:
 | Rede | FastTrack conhecido; FastTrack ativo é warning forte para banda, não uma alteração automática. |
 
 Um valor inválido de entrada é uma falha de validação. Uma queue manual com o
-mesmo target é um conflito de segurança. Os dois conceitos permanecem separados
-para a UI e para uma futura política de execução.
+target igual, subnet, supernet ou CIDR sobreposto é um conflito de segurança;
+overlap nunca concede ownership. Os dois conceitos permanecem separados para a
+UI e para uma futura política de execução.
 
 ### Bloqueio permanece UNDECIDED
 
@@ -229,14 +249,15 @@ A Fase 3 analisa, mas não escolhe silenciosamente, o mecanismo de bloqueio. As
 alternativas candidatas são block-access de DHCP e firewall por
 address-list/filtro. O DHCP documenta block-access no lease, enquanto os filtros
 podem consumir address lists; ambos têm implicações diferentes de topologia,
-persistência, tráfego não-DHCP, ordem de regras e ownership. Nesta fase, um
-filtro ativo `drop`/`reject` com `src-address` igual ao IP (ou `/32`), ou com
-`src-address-list` contendo a entrada exata, é somente um sinal defensivo: se
-não tiver o comentário exato `MTMGR:DEVICE:<MAC>`, o dry-run de liberação o
-declara `FOREIGN` e não propõe removê-lo. Essa leitura estreita não declara que
-qualquer address list isolada bloqueia o dispositivo e não decide qual recurso
-a Fase 4 deverá criar. A decisão e a implementação pertencem à Fase 4, após
-revisão da topologia real e da documentação aplicável.
+persistência, tráfego não-DHCP, ordem de regras e ownership. Nesta fase, somente
+um filtro ativo, não dinâmico, em `chain=forward`, com `action=drop` ou `reject`,
+`src-address` igual ao IP (ou `/32`), ou `src-address-list` contendo a entrada
+exata, é somente um sinal defensivo: se não tiver o comentário exato
+`MTMGR:DEVICE:<MAC>`, o dry-run de liberação o declara `FOREIGN` e não propõe
+removê-lo. `chain=input` não entra nessa inferência. Essa leitura estreita não
+declara que qualquer address list isolada bloqueia o dispositivo e não decide
+qual recurso a Fase 4 deverá criar. A decisão e a implementação pertencem à
+Fase 4, após revisão da topologia real e da documentação aplicável.
 
 Por isso o dry-run de bloqueio/liberação descreve somente mudança abstrata e
 segurança: lease existe, MAC/IP/server podem ser correlacionados, já há ou não

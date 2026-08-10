@@ -8,6 +8,7 @@ import type {
   PortRole,
   ReconciliationReport,
   SystemStatus,
+  WriteAnalysis,
   WriteReadinessReport,
 } from './types';
 
@@ -46,6 +47,7 @@ export const api = {
   diagnostics: () => request<Diagnostics>('/api/diagnostics'),
   reconciliation: () => request<ReconciliationReport>('/api/reconciliation'),
   writeReadiness: () => request<WriteReadinessReport>('/api/write-readiness'),
+  writeAnalysis: () => request<WriteAnalysis>('/api/write-analysis'),
   ports: () => request<Port[]>('/api/ports'),
   port: (interfaceName: string) => request<Port>(`/api/ports/${encoded(interfaceName)}`),
   updatePort: (

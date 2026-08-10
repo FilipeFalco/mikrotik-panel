@@ -242,3 +242,14 @@ export interface WriteReadinessReport {
   checks: ReadinessCheck[];
   summary: WriteReadinessSummary;
 }
+
+/**
+ * Combined write-analysis. Readiness and reconciliation are derived from the
+ * same RouterOS snapshot, so they always refer to one observed moment.
+ * reconciliation is null when the snapshot could not be captured.
+ */
+export interface WriteAnalysis {
+  snapshotFingerprint: string | null;
+  readiness: WriteReadinessReport;
+  reconciliation: ReconciliationReport | null;
+}

@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -83,7 +84,7 @@ public class ReconciliationService {
                 .toList();
         List<RouterSimpleQueue> foreignConflicts = queues.stream()
                 .filter(queue -> !ManagedResourceIdentifier.isOwnedByPort(queue.comment(), port.interfaceName()))
-                .filter(queue -> expectedName.equals(queue.name()) || port.network().equals(queue.target()))
+                .filter(queue -> foreignQueueConflicts(port, expectedName, queue))
                 .toList();
 
         if (owned.size() > 1) {
@@ -100,8 +101,9 @@ public class ReconciliationService {
             return new ReconciliationResource("SIMPLE_QUEUE", port.interfaceName(), "Queue da porta " + port.interfaceName(),
                     ownership, ReconciliationStatus.CONFLICT, expectedName, port.network(), conflict.name(), conflict.target(),
                     true, List.of(new ReconciliationFinding("FOREIGN_QUEUE_CONFLICT",
-                    "Existe uma Simple Queue manual ou não comprovadamente gerenciada que usa o nome ou target esperado. "
-                            + "A aplicação não irá adotá-la nem alterá-la automaticamente.", PlanSeverity.BLOCKING)));
+                    "Existe uma Simple Queue manual ou não comprovadamente gerenciada que usa o nome, target sobreposto "
+                            + "ou um target relacionado que não pôde ser interpretado com segurança. A aplicação não irá "
+                            + "adotá-la nem alterá-la automaticamente.", PlanSeverity.BLOCKING)));
         }
 
         if (owned.isEmpty()) {
@@ -152,5 +154,60 @@ public class ReconciliationService {
     /** Resource naming convention only; ownership remains the exact comment. */
     public static String expectedQueueName(String interfaceName) {
         return ManagedResourceIdentifier.expectedPortQueueName(interfaceName);
+    }
+
+    /**
+     * Detects whether a foreign queue competes with the local future queue.
+     * Overlap never implies ownership: a foreign queue whose target overlaps a
+     * managed network is a FOREIGN conflict, never a MANAGED resource. A
+     * target that is not a single CIDR is only treated as related when there is
+     * a conservative signal (a blank/all-target target, the local interface,
+     * the local network, or a parseable CIDR token in a combination). An
+     * unrelated unsupported target remains unadopted and does not create a
+     * false conflict.
+     */
+    private static boolean foreignQueueConflicts(ManagedPort port, String expectedName, RouterSimpleQueue queue) {
+        if (expectedName.equals(queue.name())) {
+            return true;
+        }
+        if (targetOverlaps(port.network(), queue.target())) {
+            return true;
+        }
+        return unsupportedTargetMayAffectPort(port, queue.target());
+    }
+
+    private static boolean targetOverlaps(String localNetwork, String observedTarget) {
+        if (localNetwork == null || localNetwork.isBlank() || observedTarget == null || observedTarget.isBlank()) {
+            return false;
+        }
+        CidrRange localRange = CidrValidator.parseRange(localNetwork);
+        if (localRange == null) {
+            return false;
+        }
+        CidrRange observedRange = CidrValidator.parseRange(observedTarget);
+        if (observedRange != null && localRange.overlaps(observedRange)) {
+            return true;
+        }
+        // RouterOS can represent a target as a combination. Do not attempt to
+        // understand the full grammar; safely inspect only comma/whitespace
+        // separated literal CIDR/IP tokens and ignore the rest.
+        return Arrays.stream(observedTarget.split("[,\\s]+"))
+                .map(CidrValidator::parseRange)
+                .filter(Objects::nonNull)
+                .anyMatch(localRange::overlaps);
+    }
+
+    private static boolean unsupportedTargetMayAffectPort(ManagedPort port, String observedTarget) {
+        if (observedTarget == null || observedTarget.isBlank()) {
+            // A blank Simple Queue target is broad rather than evidence of no
+            // relation; block future adoption conservatively.
+            return true;
+        }
+        String localInterface = port.interfaceName();
+        String localNetwork = port.network();
+        return Arrays.stream(observedTarget.split("[,\\s]+"))
+                .map(String::trim)
+                .filter(token -> !token.isEmpty())
+                .anyMatch(token -> token.equals(localInterface) || token.equals(localNetwork));
     }
 }

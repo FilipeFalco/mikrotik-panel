@@ -133,14 +133,17 @@ export default function App() {
 
   // These diagnostics are deliberately on-demand. They are not part of the
   // five-second dashboard polling loop because reconciliation reads a fuller
-  // RouterOS snapshot.
+  // RouterOS snapshot. A single combined endpoint captures one snapshot and
+  // derives both readiness and reconciliation from it, so the two views always
+  // refer to the same observed moment and the six RouterOS collections are not
+  // read twice for the same analysis.
   const analyzeRouterOS = useCallback(() => {
     setAnalyzing(true);
     setError(null);
-    void Promise.all([api.writeReadiness(), api.reconciliation()])
-      .then(([nextReadiness, nextReconciliation]) => {
-        setReadiness(nextReadiness);
-        setReconciliation(nextReconciliation);
+    void api.writeAnalysis()
+      .then((analysis) => {
+        setReadiness(analysis.readiness);
+        setReconciliation(analysis.reconciliation);
       })
       .catch((reason: unknown) => setError(errorMessage(reason, 'Não foi possível analisar o estado RouterOS.')))
       .finally(() => setAnalyzing(false));

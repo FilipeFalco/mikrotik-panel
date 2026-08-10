@@ -89,7 +89,11 @@ Uma ação de reconciliation, write readiness ou dry-run captura uma única
 janela observável dos recursos necessários. Interfaces, DHCP servers, DHCP
 leases, Simple Queues, firewall filters e address lists são buscados no máximo
 uma vez por snapshot e processados em memória; não existe uma request RouterOS
-por dispositivo. O polling normal continua leve e não chama essa análise.
+por dispositivo. O endpoint combinado `GET /api/write-analysis`, usado pela UI,
+captura uma vez, deriva reconciliation e readiness do mesmo `RouterSnapshot` e
+assim não duplica as seis coleções. O status de conexão pode acrescentar uma
+leitura única de `system/resource`. O polling normal continua leve e não chama
+essa análise.
 
 ```text
 RouterOS
@@ -122,9 +126,17 @@ apenas para detectar colisão.
 A reconciliation distingue `IN_SYNC`, `DRIFTED`, `MISSING`, `CONFLICT`,
 `AMBIGUOUS_OWNERSHIP` e `NOT_APPLICABLE`. `DRIFTED` pressupõe ownership
 confirmado e configuração divergente; `CONFLICT` representa recurso
-foreign/não comprovado que compete pelo nome ou target e bloqueia uma futura
-mutação. Encontrar dois comentários esperados iguais é ambiguidade bloqueante,
-e nunca seleciona silenciosamente um deles.
+foreign/não comprovado que compete pelo nome ou target, inclusive quando o
+target CIDR é igual, subnet, supernet ou sobreposto ao CIDR local, e bloqueia
+uma futura mutação. Encontrar dois comentários esperados iguais é ambiguidade
+bloqueante, e nunca seleciona silenciosamente um deles. Overlap é somente
+evidência de conflito; ownership continua dependendo do comentário exato.
+
+Readiness valida portas a partir do estado local: somente CLIENT habilitada é
+candidata às futuras operações de banda. WAN e CLIENT desabilitada podem ser
+`NOT_APPLICABLE` sem bloquear; CLIENT habilitada com CIDR ausente ou inválido
+produz `MANAGED_PORTS_VALID` bloqueante. A resposta combinada expõe o fingerprint
+do snapshot para permitir verificar que as duas visões pertencem à mesma leitura.
 
 O planner recebe uma intenção tipada, mas recompõe ownership, estado e
 preconditions a partir do snapshot e SQLite atuais. Suporta dry-run de
@@ -181,7 +193,8 @@ isolada e gera warning sanitizado. `block-access=true` vira `BLOCKED`,
 
 `RouterOsSimpleQueueMapper` observa queues e a reconciliation somente confirma
 ownership quando o comentário é exatamente `MTMGR:PORT:<interface>`. Queue
-manual não é adotada. `max-limit` RouterOS é
+manual não é adotada; target CIDR sobreposto à rede local gera conflito
+`FOREIGN` bloqueante, sem alterar ownership. `max-limit` RouterOS é
 `upload/download`, enquanto o domínio usa `download/upload`; a inversão ocorre
 uma única vez no parser da fronteira e tem teste de direção.
 [Queues oficiais](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
@@ -205,7 +218,7 @@ desnecessária a `/api/devices`. A API `GET /api/devices` continua disponível.
 | DHCP | DHCP servers + leases correlacionadas |
 | Queues | `queue/simple` |
 | FastTrack | `ip/firewall/filter` |
-| Address lists | `ip/firewall/address-list`, inventário do snapshot e correlação estreita de filtro manual ativo `drop`/`reject` que referencia a entrada exata; nunca uma decisão de estratégia ou remoção |
+| Address lists | `ip/firewall/address-list`, inventário do snapshot e correlação estreita de filtro manual ativo em `chain=forward` com `drop`/`reject` que referencia a entrada exata; `chain=input` não é bloqueio de cliente e nunca há decisão de estratégia ou remoção |
 
 FastTrack só é consultado em diagnóstico, readiness ou plano sob demanda. Regra habilitada com
 `action=fasttrack-connection` é informada, nunca alterada. Isso é relevante

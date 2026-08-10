@@ -79,6 +79,18 @@ class ReconciliationServiceTest {
     }
 
     @Test
+    void exactOwnershipRemainsManagedWhenItsOverlappingTargetIsDrifted() {
+        ReconciliationReport report = analyze(List.of(queue(
+                ManagedResourceIdentifier.expectedPortQueueName(INTERFACE),
+                ManagedResourceIdentifier.expectedPortComment(INTERFACE), "10.10.10.0/25", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.MANAGED);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.DRIFTED);
+        assertThat(resource.conflict()).isFalse();
+    }
+
+    @Test
     void treatsAnOwnedQueueWithUnreadableLimitAsDriftRatherThanInventingALimit() {
         ReconciliationReport report = analyze(List.of(queue(
                 ManagedResourceIdentifier.expectedPortQueueName(INTERFACE),
@@ -133,6 +145,81 @@ class ReconciliationServiceTest {
         assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
         assertThat(resource.conflict()).isTrue();
         assertThat(resource.observedName()).isEqualTo(ManagedResourceIdentifier.expectedPortQueueName(INTERFACE));
+    }
+
+    @Test
+    void foreignQueueWithOverlappingSubnetTargetIsConflictWithoutAdoptingIt() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.10.10.0/25", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.FOREIGN);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
+        assertThat(resource.conflict()).isTrue();
+        assertThat(resource.observedTarget()).isEqualTo("10.10.10.0/25");
+        assertThat(resource.findings()).singleElement().satisfies(finding -> {
+            assertThat(finding.code()).isEqualTo("FOREIGN_QUEUE_CONFLICT");
+            assertThat(finding.severity()).isEqualTo(PlanSeverity.BLOCKING);
+        });
+    }
+
+    @Test
+    void foreignQueueWithOverlappingUpperSubnetTargetIsConflict() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.10.10.128/25", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.FOREIGN);
+        assertThat(resource.observedTarget()).isEqualTo("10.10.10.128/25");
+    }
+
+    @Test
+    void foreignQueueWithOverlappingSupernetTargetIsConflict() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.10.0.0/16", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.FOREIGN);
+        assertThat(resource.observedTarget()).isEqualTo("10.10.0.0/16");
+    }
+
+    @Test
+    void foreignQueueWithNonOverlappingTargetDoesNotConflict() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.10.11.0/24", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.MISSING);
+        assertThat(resource.conflict()).isFalse();
+        assertThat(report.summary().conflicts()).isZero();
+        assertThat(report.summary().missing()).isEqualTo(1);
+    }
+
+    @Test
+    void foreignQueueWithCompletelySeparateNetworkDoesNotConflict() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.20.0.0/16", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.MISSING);
+        assertThat(resource.conflict()).isFalse();
+        assertThat(report.summary().conflicts()).isZero();
+    }
+
+    @Test
+    void foreignQueueWithInterfaceTargetIsConservativelyAConflict() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", INTERFACE, knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.FOREIGN);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
+        assertThat(resource.conflict()).isTrue();
+    }
+
+    @Test
+    void overlapConflictNeverImpliesManagedOwnershipWhichRemainsExactCommentOnly() {
+        ReconciliationReport report = analyze(List.of(queue("cliente-joao", "manual", "10.10.10.0/24", knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.FOREIGN);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.CONFLICT);
     }
 
     private ReconciliationReport analyze(List<RouterSimpleQueue> queues) {

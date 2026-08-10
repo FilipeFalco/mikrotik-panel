@@ -129,8 +129,11 @@ As decisões de ownership, snapshot, reconciliation e dry-run estão em
 ## Preparação para futuras alterações
 
 A análise pesada é sob demanda, em **Configurações → Segurança de escrita**;
-não é executada a cada polling do dashboard. Uma execução captura um snapshot
-do RouterOS, compara-o aos metadados locais e produz diagnóstico ou plano:
+não é executada a cada polling do dashboard. O botão usa `GET
+/api/write-analysis`: uma execução captura um snapshot do RouterOS e deriva
+readiness e reconciliation dessa mesma observação, sem duplicar as seis
+coleções. O status de conexão pode fazer uma leitura extra de
+`/rest/system/resource`:
 
 ```text
 RouterOS GET → Router Snapshot → Ownership / Reconciliation / Readiness
@@ -145,8 +148,17 @@ Ownership depende do comentário esperado exato (`MTMGR:DEVICE:…` ou
 `MTMGR:PORT:…`). Um prefixo `MTMGR:`, nome, `.id`, MAC, IP ou target parecido
 não basta; recurso manual não é adotado. A reconciliação distingue
 `IN_SYNC`, `DRIFTED`, `MISSING`, `CONFLICT`, ownership ambíguo e
-`NOT_APPLICABLE`. O conflito de recurso foreign é bloqueante; drift é uma
-divergência de recurso já comprovadamente gerenciado.
+`NOT_APPLICABLE`. O conflito de recurso foreign é bloqueante; para Simple
+Queues, target igual, subnet, supernet ou qualquer CIDR sobreposto também é
+conflito. Isso não concede ownership: somente o comentário exato prova
+`MANAGED`. WAN e CLIENT desabilitada são não aplicáveis ao readiness; somente
+CLIENT habilitada entra em `managedPorts`, e CIDR ausente/inválido torna
+`MANAGED_PORTS_VALID` bloqueante.
+
+No dry-run de bloqueio/liberação, somente filtro `chain=forward` com
+`drop`/`reject`, não desabilitado nem dinâmico, e IP exato ou address-list com
+entrada exata é candidato observacional. `chain=input` protege o próprio
+MikroTik e não é contado como bloqueio do cliente.
 
 Dry-run aceita somente intenção tipada para `BLOCK_DEVICE`, `UNBLOCK_DEVICE`,
 `SET_PORT_SPEED` e `SET_DEVICE_SPEED`. O backend reconstrói o plano usando o

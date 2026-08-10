@@ -2,6 +2,8 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
+import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.ManagedPortRole;
 import com.mikrotikmanager.domain.PlanSeverity;
 import com.mikrotikmanager.domain.ReadinessCheck;
 import com.mikrotikmanager.domain.ReadinessSeverity;
@@ -10,6 +12,7 @@ import com.mikrotikmanager.domain.ReconciliationReport;
 import com.mikrotikmanager.domain.ReconciliationStatus;
 import com.mikrotikmanager.domain.WriteReadinessReport;
 import com.mikrotikmanager.gateway.MikrotikGateway;
+import com.mikrotikmanager.persistence.ManagedPortRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +33,12 @@ import java.util.Objects;
  * extra gateway call is {@link MikrotikGateway#connectionStatus()}, which is
  * used only to avoid attempting reconciliation when RouterOS is unavailable.
  * </p>
+ *
+ * <p>Readiness counts only ports that are applicable candidates for future
+ * bandwidth operations: a local CLIENT port that is enabled. WAN ports and
+ * disabled CLIENT ports are legitimately {@code NOT_APPLICABLE} and never make
+ * readiness invalid; only an enabled CLIENT port with a missing or invalid
+ * CIDR blocks future execution.</p>
  */
 @Service
 public class WriteReadinessService {
@@ -38,19 +47,22 @@ public class WriteReadinessService {
     private final MikrotikProperties properties;
     private final MikrotikGateway gateway;
     private final ReconciliationService reconciliationService;
+    private final ManagedPortRepository managedPortRepository;
     private final Clock clock;
 
     @Autowired
     public WriteReadinessService(MikrotikProperties properties, MikrotikGateway gateway,
-                                 ReconciliationService reconciliationService) {
-        this(properties, gateway, reconciliationService, Clock.systemUTC());
+                                 ReconciliationService reconciliationService, ManagedPortRepository managedPortRepository) {
+        this(properties, gateway, reconciliationService, managedPortRepository, Clock.systemUTC());
     }
 
     WriteReadinessService(MikrotikProperties properties, MikrotikGateway gateway,
-                          ReconciliationService reconciliationService, Clock clock) {
+                          ReconciliationService reconciliationService, ManagedPortRepository managedPortRepository,
+                          Clock clock) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.gateway = Objects.requireNonNull(gateway, "gateway");
         this.reconciliationService = Objects.requireNonNull(reconciliationService, "reconciliationService");
+        this.managedPortRepository = Objects.requireNonNull(managedPortRepository, "managedPortRepository");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -79,6 +91,23 @@ public class WriteReadinessService {
         }
     }
 
+    /**
+     * Produces readiness from an already-captured reconciliation, reusing the
+     * same RouterOS observation. Used by the combined write-analysis endpoint
+     * so readiness and reconciliation are guaranteed to share one snapshot.
+     * It never requests another snapshot and never enables RouterOS execution.
+     */
+    public WriteReadinessReport analyze(GatewayConnectionStatus connection, ReconciliationReport reconciliation) {
+        Objects.requireNonNull(connection, "connection");
+        if (!connection.connected()) {
+            return unavailableReport(connection);
+        }
+        if (reconciliation == null) {
+            return analysisUnavailableReport(connection);
+        }
+        return reportFrom(connection, reconciliation);
+    }
+
     private GatewayConnectionStatus connectionStatus() {
         try {
             return gateway.connectionStatus();
@@ -92,7 +121,8 @@ public class WriteReadinessService {
 
     private WriteReadinessReport reportFrom(GatewayConnectionStatus connection,
                                              ReconciliationReport reconciliation) {
-        ReadinessSummary summary = summary(reconciliation);
+        List<ManagedPort> localPorts = managedPortRepository.findAll();
+        ReadinessSummary summary = summary(reconciliation, localPorts);
         int localManagedPorts = summary.managedPorts();
         int validManagedPorts = summary.validManagedPorts();
         boolean hasBlockingDrift = reconciliation.resources().stream()
@@ -198,15 +228,15 @@ public class WriteReadinessService {
     private ReadinessCheck managedPortsCheck(int managedPorts, int validManagedPorts) {
         if (managedPorts == 0) {
             return check("MANAGED_PORTS_VALID", "Portas gerenciadas", true, ReadinessSeverity.INFO,
-                    "Nenhuma porta local gerenciada foi configurada para análise.");
+                    "Nenhuma porta CLIENT habilitada foi configurada para análise.");
         }
         boolean valid = managedPorts == validManagedPorts;
         return check("MANAGED_PORTS_VALID", "Portas gerenciadas", valid,
                 valid ? ReadinessSeverity.INFO : ReadinessSeverity.BLOCKING,
                 valid
-                        ? validManagedPorts + " porta(s) local(is) gerenciada(s) válida(s)."
+                        ? validManagedPorts + " porta(s) CLIENT habilitada(s) com CIDR válido."
                         : validManagedPorts + " de " + managedPorts
-                        + " porta(s) local(is) gerenciada(s) têm CIDR CLIENT habilitado válido.");
+                        + " porta(s) CLIENT habilitada(s) têm CIDR válido. WAN e portas desabilitadas não contam.");
     }
 
     private ReadinessCheck conflictCheck(ReconciliationReport reconciliation) {
@@ -248,14 +278,24 @@ public class WriteReadinessService {
         return new ReadinessCheck(code, description, satisfied, severity, detail);
     }
 
-    private ReadinessSummary summary(ReconciliationReport reconciliation) {
-        int managedPorts = reconciliation.resources().size();
-        int validManagedPorts = (int) reconciliation.resources().stream()
-                .filter(resource -> resource.status() != ReconciliationStatus.NOT_APPLICABLE)
+    private ReadinessSummary summary(ReconciliationReport reconciliation, List<ManagedPort> localPorts) {
+        // managedPorts counts only ports that are applicable candidates for
+        // future bandwidth operations: a local CLIENT port that is enabled. WAN
+        // ports and disabled CLIENT ports are legitimately NOT_APPLICABLE and
+        // never count against readiness. validManagedPorts counts how many of
+        // those applicable candidates have a parseable CIDR configured.
+        int applicableClientPorts = (int) localPorts.stream()
+                .filter(port -> port.enabled() && port.role() == ManagedPortRole.CLIENT)
+                .count();
+        int validApplicableClientPorts = (int) localPorts.stream()
+                .filter(port -> port.enabled() && port.role() == ManagedPortRole.CLIENT)
+                .filter(port -> port.network() != null && !port.network().isBlank())
+                .filter(port -> CidrValidator.isValid(port.network()))
                 .count();
         return new ReadinessSummary(reconciliation.summary().managed(), reconciliation.summary().foreign(),
                 reconciliation.summary().inSync(), reconciliation.summary().drifted(), reconciliation.summary().missing(),
-                reconciliation.summary().conflicts(), reconciliation.summary().ambiguous(), managedPorts, validManagedPorts);
+                reconciliation.summary().conflicts(), reconciliation.summary().ambiguous(),
+                applicableClientPorts, validApplicableClientPorts);
     }
 
     private ReadinessSummary emptySummary() {

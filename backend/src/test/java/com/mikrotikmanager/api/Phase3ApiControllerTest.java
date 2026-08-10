@@ -52,7 +52,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = {PlanController.class, ReconciliationController.class, WriteReadinessController.class},
+@WebMvcTest(controllers = {PlanController.class, ReconciliationController.class, WriteReadinessController.class,
+        WriteAnalysisController.class},
         properties = "app.frontend-origin=http://localhost:5173")
 @Import(GlobalExceptionHandler.class)
 @EnableConfigurationProperties(AppProperties.class)
@@ -70,6 +71,9 @@ class Phase3ApiControllerTest {
 
     @MockBean
     private WriteReadinessService writeReadinessService;
+
+    @MockBean
+    private com.mikrotikmanager.service.WriteAnalysisService writeAnalysisService;
 
     @Test
     void mapsOnDemandReconciliationToItsOwnSafeDto() throws Exception {
@@ -98,6 +102,25 @@ class Phase3ApiControllerTest {
                 .andExpect(jsonPath("$.summary.conflicts").value(1));
 
         verify(writeReadinessService).analyze();
+    }
+
+    @Test
+    void mapsCombinedWriteAnalysisWithoutEnablingExecutionAndKeepsOneSnapshotFingerprint() throws Exception {
+        when(writeAnalysisService.analyze()).thenReturn(new com.mikrotikmanager.service.WriteAnalysisService.WriteAnalysis(
+                readiness(), reconciliation(), "fingerprint"));
+
+        mockMvc.perform(get("/api/write-analysis"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshotFingerprint").value("fingerprint"))
+                .andExpect(jsonPath("$.readiness.executionEnabled").value(false))
+                .andExpect(jsonPath("$.readiness.summary.conflicts").value(1))
+                .andExpect(jsonPath("$.reconciliation.resources[0].status").value("CONFLICT"))
+                .andExpect(jsonPath("$.reconciliation.snapshotFingerprint").value("fingerprint"))
+                .andExpect(content().string(not(containsString("router-secret"))))
+                .andExpect(content().string(not(containsString("Authorization"))));
+
+        verify(writeAnalysisService).analyze();
+        verifyNoInteractions(writeReadinessService, reconciliationService);
     }
 
     @Test
