@@ -12,9 +12,7 @@ import java.util.Set;
 /** RouterOS transport DTO for the match fields relevant to the one MTMGR rule. */
 public final class RouterOsFirewallFilterDto {
     private static final Set<String> NON_RESTRICTIVE_UNKNOWN_FIELDS = Set.of(
-            "bytes", "packets", "creation-time", "last-seen", "invalid", "active", "default",
-            "log", "log-prefix", "limit", "burst-limit", "burst-threshold", "burst-time",
-            "time", "comment", "disabled", "dynamic", "chain", "action", ".id");
+            ".id", "bytes", "packets", "log", "log-prefix");
 
     @JsonProperty(".id") private String id;
     @JsonProperty("action") private String action;

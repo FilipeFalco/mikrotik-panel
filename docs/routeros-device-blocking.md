@@ -308,6 +308,10 @@ Regras MTMGR válidas de bloqueio formam um prefixo seguro da chain `forward`. A
 
 As operações de block/unblock mantêm o lock por MAC para idempotência e também serializam `ROUTEROS:FIREWALL_FILTER`. Esse segundo lock cobre releitura, planejamento, escrita e verificação da lista ordenada, evitando uma corrida de `place-before` entre MACs diferentes.
 
+## Exact desired-state
+
+Ownership MTMGR prova quem criou ou possui o recurso, mas não que a regra ainda tenha a semântica esperada. Qualquer matcher adicional — incluindo protocol, ports, addresses, interfaces, `limit` ou `time` — torna a regra `DRIFTED`. Campos desconhecidos também são tratados conservadoramente como drift; somente `.id`, counters (`bytes`, `packets`) e logging (`log`, `log-prefix`) são aceitos como não restritivos.
+
 ## Semântica exata
 
 Ownership continua sendo apenas o comentário MTMGR exato. Para ser um bloqueio válido, a regra também precisa ser `forward/drop`, MAC e comentário esperados, `disabled=false`, `dynamic=false` e sem matcher adicional. Entre os matchers verificados estão protocolo, endereços/listas origem e destino, portas, interfaces/listas, connection/packet/routing marks, connection state/NAT state, layer7, TCP flags, ICMP options e address type. Campos operacionais como `.id`, bytes, packets e creation-time não causam drift. Um matcher restritivo desconhecido é tratado conservadoramente como drift.

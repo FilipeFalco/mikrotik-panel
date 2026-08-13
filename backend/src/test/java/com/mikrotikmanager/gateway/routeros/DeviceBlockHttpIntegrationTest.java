@@ -15,6 +15,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -131,6 +132,12 @@ class DeviceBlockHttpIntegrationTest {
     }
 
     @Test
+    void limitAndTimeMatchersAreManagedDriftAndNeverWritten() throws Exception {
+        assertDriftMatcherRejected("limit", "10/1s,10:packet");
+        assertDriftMatcherRejected("time", "08:00:00-18:00:00,mon,tue,wed,thu,fri");
+    }
+
+    @Test
     void statefulFakeSmokeBlocksBothDevicesThenLeavesNoManagedRules() throws Exception {
         mockMvc.perform(post("/api/devices/{mac}/block", MAC_A)).andExpect(status().isOk());
         mockMvc.perform(post("/api/devices/{mac}/block", MAC_B)).andExpect(status().isOk());
@@ -145,6 +152,32 @@ class DeviceBlockHttpIntegrationTest {
 
     private static JsonNode readJson(String value) {
         try { return JSON.readTree(value); } catch (Exception exception) { throw new AssertionError(exception); }
+    }
+
+    private void assertDriftMatcherRejected(String matcher, String value) throws Exception {
+        FAKE.seedFirewallFilters("""
+                [{".id":"*drift","chain":"forward","action":"drop","src-mac-address":"AA:BB:CC:DD:EE:01","comment":"MTMGR:DEVICE:AA-BB-CC-DD-EE-01","%s":"%s","disabled":"false","dynamic":"false"}]
+                """.formatted(matcher, value));
+        FAKE.clearRequests();
+
+        mockMvc.perform(get("/api/devices"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].blocked").value(false));
+        mockMvc.perform(post("/api/plans/block").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"macAddress\":\"" + MAC_A + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.readyForFutureExecution").value(false))
+                .andExpect(jsonPath("$.conflicts[0].code").value("MANAGED_BLOCK_RULE_DRIFT"));
+        mockMvc.perform(post("/api/plans/unblock").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"macAddress\":\"" + MAC_A + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.readyForFutureExecution").value(false))
+                .andExpect(jsonPath("$.conflicts[0].code").value("MANAGED_BLOCK_RULE_DRIFT"));
+        mockMvc.perform(post("/api/devices/{mac}/block", MAC_A)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("MANAGED_BLOCK_RULE_DRIFT"));
+        mockMvc.perform(delete("/api/devices/{mac}/block", MAC_A)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("MANAGED_BLOCK_RULE_DRIFT"));
+        assertThat(FAKE.writeJournal()).isEmpty();
     }
 
     private static void assertAllowlistedWrites() {
