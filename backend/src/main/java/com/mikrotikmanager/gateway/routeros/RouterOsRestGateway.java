@@ -230,7 +230,26 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                 RouterOsValueParser.booleanOrDefault(filter.dynamic(), false, "ip/firewall/filter.dynamic"),
                 RouterOsValueParser.optionalText(filter.srcAddress()),
                 RouterOsValueParser.optionalText(filter.srcAddressList()),
-                RouterOsValueParser.optionalText(filter.srcMacAddress()));
+                RouterOsValueParser.optionalText(filter.srcMacAddress()),
+                RouterOsValueParser.optionalText(filter.protocol()),
+                RouterOsValueParser.optionalText(filter.dstAddress()),
+                RouterOsValueParser.optionalText(filter.dstAddressList()),
+                RouterOsValueParser.optionalText(filter.srcPort()),
+                RouterOsValueParser.optionalText(filter.dstPort()),
+                RouterOsValueParser.optionalText(filter.inInterface()),
+                RouterOsValueParser.optionalText(filter.inInterfaceList()),
+                RouterOsValueParser.optionalText(filter.outInterface()),
+                RouterOsValueParser.optionalText(filter.outInterfaceList()),
+                RouterOsValueParser.optionalText(filter.connectionState()),
+                RouterOsValueParser.optionalText(filter.connectionMark()),
+                RouterOsValueParser.optionalText(filter.packetMark()),
+                RouterOsValueParser.optionalText(filter.routingMark()),
+                RouterOsValueParser.optionalText(filter.layer7Protocol()),
+                RouterOsValueParser.optionalText(filter.tcpFlags()),
+                RouterOsValueParser.optionalText(filter.icmpOptions()),
+                RouterOsValueParser.optionalText(filter.addressType()),
+                RouterOsValueParser.optionalText(filter.connectionNatState()),
+                filter.hasUnknownRestrictiveMatcher());
     }
 
     private List<RouterDevice> mergeBlockStates(List<RouterDevice> devices,
@@ -259,8 +278,15 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
             } catch (IllegalArgumentException exception) {
                 continue;
             }
-            ResourceOwnership ownership = ManagedResourceIdentifier.isOwnedByDevice(filter.comment(), normalized)
-                    ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
+            boolean managed = ManagedResourceIdentifier.isOwnedByDevice(filter.comment(), normalized);
+            // Exact ownership alone does not prove a valid panel block. Keep a
+            // drift observation visible without reporting the device BLOCKED.
+            if (managed && !ManagedDeviceBlockRule.isExactDesiredRule(filter, normalized)) {
+                observations.putIfAbsent(normalized,
+                        new DeviceBlockObservation(false, ResourceOwnership.MANAGED, "MANAGED_BLOCK_RULE_DRIFT"));
+                continue;
+            }
+            ResourceOwnership ownership = managed ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
             DeviceBlockObservation current = observations.get(normalized);
             ResourceOwnership combined = current == null ? ownership
                     : current.ownership() == ResourceOwnership.MANAGED && ownership == ResourceOwnership.MANAGED

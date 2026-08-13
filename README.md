@@ -242,3 +242,8 @@ Physical Phase 4 write validation: NOT RUN
 - [Packet Flow — FastTrack](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
 - [User e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 - [Services](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
+## Correções finais da Fase 4
+
+O painel pode, quando explicitamente habilitado, criar e remover somente regras MTMGR de bloqueio por MAC em `/ip/firewall/filter`. A regra é validada por ownership exato e semântica exata; matchers extras são drift e nunca são corrigidos automaticamente. Múltiplas regras MTMGR válidas podem coexistir em qualquer ordem no prefixo seguro da chain `forward`.
+
+O modo real exige `MIKROTIK_WRITE_ENABLED=true`, `MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED=true` e `MIKROTIK_WRITE_USERNAME`/`MIKROTIK_WRITE_PASSWORD` separados das credenciais de leitura. A interface informa **Escrita restrita** nesse caso: speed, DHCP, queues, FastTrack, NAT, routes e bridges permanecem sem escrita.

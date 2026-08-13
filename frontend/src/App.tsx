@@ -379,7 +379,7 @@ export default function App() {
   const routerConnectionLabel = systemStatus?.mockMode
     ? 'Dados simulados'
     : systemStatus?.connected
-      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? ' · Somente leitura' : ''}`
+      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? deviceBlockExecutionEnabled ? ' · Escrita restrita' : ' · Somente leitura' : ''}`
       : 'RouterOS';
 
   const content = () => {
@@ -403,7 +403,7 @@ export default function App() {
       <main className="main-content">
         <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
         {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
-        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>RouterOS em modo somente leitura.</strong><span>{deviceBlockExecutionEnabled ? 'Configurações e metadata locais continuam disponíveis; bloqueio/liberação está habilitado pela capability informada.' : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
+        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>{deviceBlockExecutionEnabled ? 'RouterOS com escrita restrita.' : 'RouterOS em modo somente leitura.'}</strong><span>{deviceBlockExecutionEnabled ? 'A aplicação pode criar/remover somente regras MTMGR de bloqueio de dispositivos. Demais operações RouterOS continuam indisponíveis.' : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>

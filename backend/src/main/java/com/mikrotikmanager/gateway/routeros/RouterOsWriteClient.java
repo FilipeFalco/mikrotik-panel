@@ -14,6 +14,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
 import java.util.Objects;
+import java.net.URI;
 
 /**
  * The only mutable RouterOS transport in Phase 4.
@@ -36,6 +37,18 @@ public final class RouterOsWriteClient implements DeviceBlockMutationGateway {
     RouterOsWriteClient(MikrotikProperties properties, RestClient restClient) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.restClient = Objects.requireNonNull(restClient, "restClient");
+    }
+
+    /** Test-only loopback constructor; production construction remains HTTPS-only. */
+    static RouterOsWriteClient forLoopbackHttpTest(MikrotikProperties properties, URI baseUri, RestClient.Builder builder) {
+        if (!"http".equalsIgnoreCase(baseUri.getScheme())
+                || !("127.0.0.1".equals(baseUri.getHost()) || "localhost".equalsIgnoreCase(baseUri.getHost()) || "::1".equals(baseUri.getHost()))) {
+            throw new IllegalArgumentException("Test RouterOS HTTP URI must use a loopback http host");
+        }
+        return new RouterOsWriteClient(properties, builder.baseUrl(baseUri.toASCIIString())
+                .defaultHeaders(headers -> RouterOsRestClient.applyBasicAuthentication(
+                        headers, properties.writeUsername(), properties.writePassword()))
+                .build());
     }
 
     /** Creates exactly one managed IPv4 firewall filter rule. */

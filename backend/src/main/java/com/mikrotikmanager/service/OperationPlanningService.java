@@ -775,7 +775,7 @@ public class OperationPlanningService {
 
         private boolean hasSingleDesiredManagedRule() {
             return managedFirewallRules.size() == 1
-                    && ManagedDeviceBlockRule.isDesired(managedFirewallRules.getFirst(), normalizedMac);
+                    && ManagedDeviceBlockRule.isExactDesiredRule(managedFirewallRules.getFirst(), normalizedMac);
         }
 
         private BlockResource primaryBlockResource() {

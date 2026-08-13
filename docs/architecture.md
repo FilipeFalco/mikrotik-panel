@@ -251,3 +251,8 @@ A Fase 5 não foi iniciada.
 - [Packet Flow — FastTrack](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
 - [User e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 - [Configuration Management](https://manual.mikrotik.com/docs/getting-started/configuration-management/)
+## Escrita restrita da Fase 4
+
+O gateway principal RouterOS permanece GET-only. A escrita é um cliente separado, habilitado apenas pelas duas flags de escrita e por credenciais separadas. A única allowlist é `PUT /rest/ip/firewall/filter` e `DELETE /rest/ip/firewall/filter/{id}`. Não há POST, PATCH, DHCP, queue, speed, NAT, route ou bridge writes.
+
+Na UI, `readOnly` continua descrevendo o gateway de leitura. Quando a capability de block/unblock está habilitada, a apresentação mostra **Escrita restrita**, para não sugerir incorretamente que toda a aplicação seja somente leitura; limites de velocidade continuam indisponíveis.

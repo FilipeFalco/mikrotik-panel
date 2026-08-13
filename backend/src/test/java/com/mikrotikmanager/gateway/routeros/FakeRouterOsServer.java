@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -39,6 +40,7 @@ final class FakeRouterOsServer implements AutoCloseable {
     private final List<CapturedWrite> writeJournal = new CopyOnWriteArrayList<>();
     private final Object firewallStateMonitor = new Object();
     private volatile StatefulFirewallFilters firewallFilters;
+    private volatile Credentials credentials;
 
     private FakeRouterOsServer(HttpServer server) {
         this.server = server;
@@ -70,6 +72,13 @@ final class FakeRouterOsServer implements AutoCloseable {
 
     void respond(String path, int status, String body) {
         responses.put(path, new FakeResponse(status, body));
+    }
+
+    /** Requires distinct principals for GET and the two allow-listed writes. */
+    FakeRouterOsServer requireCredentials(String readUsername, String readPassword,
+                                          String writeUsername, String writePassword) {
+        credentials = new Credentials(readUsername, readPassword, writeUsername, writePassword);
+        return this;
     }
 
     /**
@@ -123,6 +132,12 @@ final class FakeRouterOsServer implements AutoCloseable {
         return writeRequests();
     }
 
+    String firewallFilterState() {
+        synchronized (firewallStateMonitor) {
+            return firewallFilters == null ? "[]" : firewallFilters.snapshot().toString();
+        }
+    }
+
     long requestCount(String path) {
         return requests.stream().filter(request -> path.equals(request.path())).count();
     }
@@ -141,12 +156,16 @@ final class FakeRouterOsServer implements AutoCloseable {
     private void handle(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
-        // Do not inspect request headers: Basic credentials are intentionally
-        // outside the observable test surface of this fake.
+        String principal = principal(exchange);
         String requestBody = "GET".equals(method)
                 ? ""
                 : new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        recordRequest(method, path, requestBody);
+        recordRequest(method, path, requestBody, principal);
+
+        if (!authorized(method, exchange.getRequestHeaders().getFirst("Authorization"))) {
+            respond(exchange, new FakeResponse(401, "{\"error\":401}"));
+            return;
+        }
 
         FakeResponse response = configuredResponse(path);
         if (response == null && firewallFilters != null && isFirewallFilterResource(path)) {
@@ -155,6 +174,10 @@ final class FakeRouterOsServer implements AutoCloseable {
         if (response == null) {
             response = new FakeResponse(404, "{\"error\":404}");
         }
+        respond(exchange, response);
+    }
+
+    private void respond(HttpExchange exchange, FakeResponse response) throws IOException {
         byte[] body = response.body().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.sendResponseHeaders(response.status(), body.length);
@@ -163,14 +186,33 @@ final class FakeRouterOsServer implements AutoCloseable {
         }
     }
 
-    private void recordRequest(String method, String path, String body) {
-        CapturedRequest request = new CapturedRequest(method, path);
+    private void recordRequest(String method, String path, String body, String principal) {
+        CapturedRequest request = new CapturedRequest(method, path, principal);
         requests.add(request);
         if ("GET".equals(method)) {
             readJournal.add(request);
             return;
         }
-        writeJournal.add(new CapturedWrite(method, path, sanitizeBody(body)));
+        writeJournal.add(new CapturedWrite(method, path, sanitizeBody(body), principal));
+    }
+
+    private boolean authorized(String method, String authorization) {
+        Credentials configured = credentials;
+        if (configured == null) return true;
+        String expected = "GET".equals(method) ? configured.readAuthorization() : configured.writeAuthorization();
+        return expected.equals(authorization);
+    }
+
+    private static String principal(HttpExchange exchange) {
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authorization == null || !authorization.startsWith("Basic ")) return "unauthenticated";
+        try {
+            String decoded = new String(Base64.getDecoder().decode(authorization.substring("Basic ".length())), StandardCharsets.UTF_8);
+            int separator = decoded.indexOf(':');
+            return separator < 0 ? "unauthenticated" : decoded.substring(0, separator);
+        } catch (IllegalArgumentException exception) {
+            return "unauthenticated";
+        }
     }
 
     private FakeResponse configuredResponse(String path) {
@@ -353,10 +395,20 @@ final class FakeRouterOsServer implements AutoCloseable {
                 || normalized.contains("apikey");
     }
 
-    record CapturedRequest(String method, String path) {
+    record CapturedRequest(String method, String path, String principal) {
+        CapturedRequest(String method, String path) { this(method, path, null); }
     }
 
-    record CapturedWrite(String method, String path, String body) {
+    record CapturedWrite(String method, String path, String body, String principal) {
+        CapturedWrite(String method, String path, String body) { this(method, path, body, null); }
+    }
+
+    private record Credentials(String readUsername, String readPassword, String writeUsername, String writePassword) {
+        private String readAuthorization() { return basic(readUsername, readPassword); }
+        private String writeAuthorization() { return basic(writeUsername, writePassword); }
+        private static String basic(String username, String password) {
+            return "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     private static final class StatefulFirewallFilters {

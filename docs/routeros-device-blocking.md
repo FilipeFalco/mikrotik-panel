@@ -302,3 +302,16 @@ bridge, IPv6 ou velocidade nesta Fase 4. A Fase 5 não foi iniciada.
 - [User e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 - [Configuration Management](https://manual.mikrotik.com/docs/getting-started/configuration-management/)
 - [Console](https://manual.mikrotik.com/docs/management-tools/console/)
+## Prefixo seguro e concorrência
+
+Regras MTMGR válidas de bloqueio formam um prefixo seguro da chain `forward`. A ordem relativa entre dispositivos gerenciados não importa: todas devem ficar antes da primeira regra `forward` estática externa (FastTrack, accept ou regra manual). Uma regra MTMGR com drift não conta para esse prefixo.
+
+As operações de block/unblock mantêm o lock por MAC para idempotência e também serializam `ROUTEROS:FIREWALL_FILTER`. Esse segundo lock cobre releitura, planejamento, escrita e verificação da lista ordenada, evitando uma corrida de `place-before` entre MACs diferentes.
+
+## Semântica exata
+
+Ownership continua sendo apenas o comentário MTMGR exato. Para ser um bloqueio válido, a regra também precisa ser `forward/drop`, MAC e comentário esperados, `disabled=false`, `dynamic=false` e sem matcher adicional. Entre os matchers verificados estão protocolo, endereços/listas origem e destino, portas, interfaces/listas, connection/packet/routing marks, connection state/NAT state, layer7, TCP flags, ICMP options e address type. Campos operacionais como `.id`, bytes, packets e creation-time não causam drift. Um matcher restritivo desconhecido é tratado conservadoramente como drift.
+
+## Teste integrado
+
+O teste local stateful percorre `MockMvc → DeviceController → DeviceBlockExecutionService → RouterOsWriteClient → Fake RouterOS`. Ele valida credenciais de leitura para GET e de escrita para PUT/DELETE, sem registrar senhas, e confere que a allowlist permanece limitada ao firewall filter.

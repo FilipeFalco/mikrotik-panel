@@ -2,6 +2,10 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.DeviceStatus;
 import com.mikrotikmanager.domain.OperationPlan;
+import com.mikrotikmanager.domain.OperationIntent;
+import com.mikrotikmanager.domain.BlockDeviceIntent;
+import com.mikrotikmanager.domain.UnblockDeviceIntent;
+import com.mikrotikmanager.domain.ManagedDeviceBlockRule;
 import com.mikrotikmanager.domain.PlanConflict;
 import com.mikrotikmanager.domain.PlanTarget;
 import com.mikrotikmanager.domain.ResourceOwnership;
@@ -30,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,6 +84,46 @@ class DeviceBlockExecutionServiceTest {
     }
 
     @Test
+    void anotherValidManagedRuleBeforeTheTargetIsStillASafeNoOp() {
+        String otherMac = "AA:BB:CC:DD:EE:02";
+        DeviceBlockMutationGateway mutation = mock(DeviceBlockMutationGateway.class);
+        Fixture fixture = fixture(mutation);
+        when(fixture.snapshots.capture()).thenReturn(snapshot(List.of(desiredRule("*other", otherMac), desiredRule(), anchor())));
+
+        fixture.service.block(MAC);
+
+        verify(mutation, never()).createManagedDeviceBlockRule(any(), any());
+        verify(mutation, never()).deleteManagedDeviceBlockRule(anyString());
+    }
+
+    @Test
+    void newRuleUsesTheFirstExternalForwardRuleRatherThanAnotherManagedRule() {
+        String otherMac = "AA:BB:CC:DD:EE:02";
+        DeviceBlockMutationGateway mutation = mock(DeviceBlockMutationGateway.class);
+        Fixture fixture = fixture(mutation);
+        when(fixture.snapshots.capture()).thenReturn(
+                snapshot(List.of(desiredRule("*other", otherMac), anchor())),
+                snapshot(List.of(desiredRule("*other", otherMac), desiredRule(), anchor())));
+
+        fixture.service.block(MAC);
+
+        verify(mutation).createManagedDeviceBlockRule(any(), eq("*anchor"));
+    }
+
+    @Test
+    void externalForwardRuleBeforeManagedTargetIsUnsafe() {
+        DeviceBlockMutationGateway mutation = mock(DeviceBlockMutationGateway.class);
+        Fixture fixture = fixture(mutation);
+        when(fixture.snapshots.capture()).thenReturn(snapshot(List.of(anchor(), desiredRule())));
+
+        assertThatThrownBy(() -> fixture.service.block(MAC))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.DEVICE_BLOCK_POSITION_UNSAFE);
+        verify(mutation, never()).createManagedDeviceBlockRule(any(), any());
+    }
+
+    @Test
     void unblockResolvesTheCurrentRouterOsIdAndVerifiesAbsence() {
         DeviceBlockMutationGateway mutation = mock(DeviceBlockMutationGateway.class);
         Fixture fixture = fixture(mutation);
@@ -110,7 +155,7 @@ class DeviceBlockExecutionServiceTest {
         Fixture fixture = fixture(mutation);
         when(fixture.snapshots.capture()).thenReturn(snapshot(List.of(foreignRule(), anchor())));
         OperationPlan foreignPlan = plan(false, conflict("UNOWNED_BLOCK_RESOURCE"));
-        when(fixture.planning.planFromSnapshot(any(), any())).thenReturn(foreignPlan);
+        org.mockito.Mockito.doReturn(foreignPlan).when(fixture.planning).planFromSnapshot(any(), any());
 
         assertThatThrownBy(() -> fixture.service.unblock(MAC))
                 .isInstanceOf(ApiException.class)
@@ -127,7 +172,7 @@ class DeviceBlockExecutionServiceTest {
         Fixture duplicate = fixture(mutation);
         when(duplicate.snapshots.capture()).thenReturn(snapshot(List.of(desiredRule(), desiredRule("*managed-2"), anchor())));
         OperationPlan duplicatePlan = plan(false, conflict("AMBIGUOUS_OWNERSHIP"));
-        when(duplicate.planning.planFromSnapshot(any(), any())).thenReturn(duplicatePlan);
+        org.mockito.Mockito.doReturn(duplicatePlan).when(duplicate.planning).planFromSnapshot(any(), any());
 
         assertThatThrownBy(() -> duplicate.service.block(MAC))
                 .isInstanceOf(ApiException.class)
@@ -138,7 +183,7 @@ class DeviceBlockExecutionServiceTest {
         Fixture drift = fixture(mutation);
         when(drift.snapshots.capture()).thenReturn(snapshot(List.of(driftedRule(), anchor())));
         OperationPlan driftPlan = plan(false, conflict("MANAGED_BLOCK_RULE_DRIFT"));
-        when(drift.planning.planFromSnapshot(any(), any())).thenReturn(driftPlan);
+        org.mockito.Mockito.doReturn(driftPlan).when(drift.planning).planFromSnapshot(any(), any());
 
         assertThatThrownBy(() -> drift.service.unblock(MAC))
                 .isInstanceOf(ApiException.class)
@@ -206,6 +251,47 @@ class DeviceBlockExecutionServiceTest {
         assertThat(captures.get()).isEqualTo(3);
     }
 
+    @Test
+    void firewallResourceLockSerializesDifferentMacsAndKeepsManagedPrefixSafe() throws Exception {
+        String otherMac = "AA:BB:CC:DD:EE:02";
+        DeviceBlockMutationGateway mutation = mock(DeviceBlockMutationGateway.class);
+        Fixture fixture = fixture(mutation);
+        var created = new ConcurrentHashMap<String, RouterFirewallFilter>();
+        when(fixture.snapshots.capture()).thenAnswer(invocation -> {
+            List<RouterFirewallFilter> rules = new java.util.ArrayList<>(created.values());
+            rules.add(anchor());
+            return snapshot(rules);
+        });
+        doAnswer(invocation -> {
+            ManagedDeviceBlockRule rule = invocation.getArgument(0);
+            created.put(rule.macAddress(), desiredRule("*managed-" + rule.macAddress().substring(rule.macAddress().length() - 2), rule.macAddress()));
+            return null;
+        }).when(mutation).createManagedDeviceBlockRule(any(), any());
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<DeviceView>> results = executor.invokeAll(List.of(
+                    () -> fixture.service.block(MAC), () -> fixture.service.block(otherMac)));
+            for (Future<DeviceView> result : results) result.get();
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(created).hasSize(2);
+        assertThat(ManagedDeviceBlockRule.hasSafeForwardPrefix(new java.util.ArrayList<>(created.values()) {{ add(anchor()); }})).isTrue();
+        verify(mutation, org.mockito.Mockito.times(2)).createManagedDeviceBlockRule(any(), eq("*anchor"));
+    }
+
+    @Test
+    void exactDesiredSemanticsRejectKnownAndUnknownRestrictiveMatchers() {
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(desiredRule(), MAC)).isTrue();
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(ruleWith("tcp", null, null, null, false), MAC)).isFalse();
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(ruleWith(null, "443", null, null, false), MAC)).isFalse();
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(ruleWith(null, null, "10.10.10.21", null, false), MAC)).isFalse();
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(ruleWith(null, null, null, "ether2", false), MAC)).isFalse();
+        assertThat(ManagedDeviceBlockRule.isExactDesiredRule(ruleWith(null, null, null, null, true), MAC)).isFalse();
+    }
+
     private Fixture fixture(DeviceBlockMutationGateway mutation) {
         RouterSnapshotService snapshots = mock(RouterSnapshotService.class);
         OperationPlanningService planning = mock(OperationPlanningService.class);
@@ -214,16 +300,28 @@ class DeviceBlockExecutionServiceTest {
         MikrotikWriteGuard guard = mock(MikrotikWriteGuard.class);
         AuditService audit = mock(AuditService.class);
         DeviceView view = new DeviceView(device(), null, null);
-        when(devices.getDevice(MAC)).thenReturn(view);
-        OperationPlan defaultPlan = plan(true);
-        when(planning.planFromSnapshot(any(), any())).thenReturn(defaultPlan);
+        when(devices.getDevice(anyString())).thenReturn(view);
+        when(planning.planFromSnapshot(any(), any())).thenAnswer(invocation -> planFor(invocation.getArgument(0), true));
         return new Fixture(new DeviceBlockExecutionService(snapshots, planning, mutation, devices, locks, guard, audit),
                 snapshots, planning, audit);
     }
 
     private OperationPlan plan(boolean ready, PlanConflict... conflicts) {
+        return plan(MAC, ready, conflicts);
+    }
+
+    private OperationPlan planFor(OperationIntent intent, boolean ready, PlanConflict... conflicts) {
+        String targetMac = switch (intent) {
+            case BlockDeviceIntent block -> block.macAddress();
+            case UnblockDeviceIntent unblock -> unblock.macAddress();
+            default -> MAC;
+        };
+        return plan(targetMac, ready, conflicts);
+    }
+
+    private OperationPlan plan(String targetMac, boolean ready, PlanConflict... conflicts) {
         OperationPlan plan = mock(OperationPlan.class);
-        when(plan.target()).thenReturn(new PlanTarget(MAC, "Test device", MAC, "ether2"));
+        when(plan.target()).thenReturn(new PlanTarget(targetMac, "Test device", targetMac, "ether2"));
         when(plan.readyForFutureExecution()).thenReturn(ready);
         when(plan.conflicts()).thenReturn(List.of(conflicts));
         return plan;
@@ -243,8 +341,12 @@ class DeviceBlockExecutionServiceTest {
     }
 
     private RouterFirewallFilter desiredRule(String id) {
-        return new RouterFirewallFilter(id, "drop", "forward", COMMENT, false, false,
-                null, null, MAC);
+        return desiredRule(id, MAC);
+    }
+
+    private RouterFirewallFilter desiredRule(String id, String mac) {
+        return new RouterFirewallFilter(id, "drop", "forward", ManagedResourceIdentifier.expectedDeviceComment(mac), false, false,
+                null, null, mac);
     }
 
     private RouterFirewallFilter foreignRule() {
@@ -255,6 +357,13 @@ class DeviceBlockExecutionServiceTest {
     private RouterFirewallFilter driftedRule() {
         return new RouterFirewallFilter("*drift", "accept", "forward", COMMENT, false, false,
                 null, null, MAC);
+    }
+
+    private RouterFirewallFilter ruleWith(String protocol, String dstPort, String srcAddress, String inInterface,
+                                          boolean unknownMatcher) {
+        return new RouterFirewallFilter("*drift", "drop", "forward", COMMENT, false, false,
+                srcAddress, null, MAC, protocol, null, null, null, dstPort, inInterface, null, null, null,
+                null, null, null, null, null, null, null, null, null, unknownMatcher);
     }
 
     private RouterSnapshot snapshot(List<RouterFirewallFilter> filters) {

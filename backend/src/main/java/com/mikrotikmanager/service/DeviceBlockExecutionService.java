@@ -65,7 +65,10 @@ public final class DeviceBlockExecutionService {
 
     private DeviceView execute(String rawMacAddress, boolean block) {
         String mac = normalize(rawMacAddress);
-        return lockManager.withLock("DEVICE:" + mac, () -> executeLocked(mac, block));
+        // Different devices still contend for one ordered RouterOS collection.
+        // The resource lock covers re-read, planning, write and verification.
+        return lockManager.withLock("ROUTEROS:FIREWALL_FILTER",
+                () -> lockManager.withLock("DEVICE:" + mac, () -> executeLocked(mac, block)));
     }
 
     private DeviceView executeLocked(String mac, boolean block) {
@@ -246,6 +249,7 @@ public final class DeviceBlockExecutionService {
     private String firstStaticForwardId(RouterSnapshot snapshot) {
         Optional<RouterFirewallFilter> first = snapshot.firewallFilters().stream()
                 .filter(filter -> !filter.dynamic() && "forward".equalsIgnoreCase(filter.chain()))
+                .filter(filter -> !ManagedDeviceBlockRule.isValidManagedDeviceBlockRule(filter))
                 .findFirst();
         if (first.isEmpty()) {
             return null;
@@ -274,20 +278,10 @@ public final class DeviceBlockExecutionService {
                     "A regra MTMGR criada não possui a semântica esperada.");
         }
         int position = snapshot.firewallFilters().indexOf(rule);
-        boolean safe = position >= 0;
-        if (safe) {
-            for (int index = 0; index < snapshot.firewallFilters().size(); index++) {
-                RouterFirewallFilter other = snapshot.firewallFilters().get(index);
-                if (index != position && !other.dynamic() && "forward".equalsIgnoreCase(other.chain())
-                        && position > index) {
-                    safe = false;
-                    break;
-                }
-            }
-        }
+        boolean safe = position >= 0 && ManagedDeviceBlockRule.hasSafeForwardPrefix(snapshot.firewallFilters());
         return safe ? new Verification(true, false, false, "ok")
                 : new Verification(false, false, true,
-                "A regra MTMGR não ficou antes das demais regras forward estáticas; o bloqueio não foi confirmado.");
+                "As regras MTMGR válidas não formam o prefixo seguro antes da primeira regra forward externa.");
     }
 
     private List<RouterFirewallFilter> managedRules(RouterSnapshot snapshot, String mac) {
@@ -298,7 +292,7 @@ public final class DeviceBlockExecutionService {
 
     private boolean hasExactlyOneDesiredRule(RouterSnapshot snapshot, String mac) {
         List<RouterFirewallFilter> rules = managedRules(snapshot, mac);
-        return rules.size() == 1 && ManagedDeviceBlockRule.isDesired(rules.getFirst(), mac);
+        return rules.size() == 1 && ManagedDeviceBlockRule.isExactDesiredRule(rules.getFirst(), mac);
     }
 
     private ApiException verificationFailure(Verification verification) {

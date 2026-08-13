@@ -364,3 +364,20 @@ it('previews block before mutation, requires explicit confirmation, sends no pla
   await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/audit')).toHaveLength(1));
   expect(screen.queryByRole('dialog', { name: 'Galaxy S25' })).not.toBeInTheDocument();
 });
+
+it('shows restricted write rather than a global read-only label when device block is enabled', async () => {
+  const restrictedStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: true };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(restrictedStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText('RouterOS 7.16.2 · Escrita restrita')).toBeInTheDocument();
+  expect(screen.getByText('RouterOS com escrita restrita.')).toBeInTheDocument();
+  expect(screen.queryByText('RouterOS em modo somente leitura.')).not.toBeInTheDocument();
+});
