@@ -1,278 +1,253 @@
 # Arquitetura — MikroTik Local Manager
 
-## Escopo atual: Fase 3 — preparação de escrita segura
+## Escopo atual: Fase 4
 
-A aplicação local lê dados de um RouterOS 7 por REST e preserva escrita apenas
-no SQLite local. A Fase 3 acrescenta snapshot, ownership, reconciliation,
-write readiness e dry-run, todos observacionais. Em modo real, o RouterOS é
-fonte de verdade para interfaces, leases, queues, firewall e address lists
-observados; SQLite é fonte de verdade para metadados escolhidos pelo operador
-e auditoria.
+A Fase 4 acrescenta execução real somente para bloquear e liberar dispositivos
+com a estratégia `FIREWALL_MAC_RULE`. O restante da aplicação continua usando
+leituras RouterOS e escrita local no SQLite. Não existe executor genérico de
+RouterOS.
+
+Physical Phase 4 write validation: NOT RUN
+
+A Fase 5 não foi iniciada.
+
+## Fronteiras de confiança
 
 ```text
 Browser (localhost)
-        │ /api
-        ▼
-React + Vite
+        │ intenção local: MAC e ação
         ▼
 Spring Boot (127.0.0.1)
  ├── SQLite + Flyway
- │   ├── managed_port: nome, descrição, CIDR, DHCP server, visibilidade e papel WAN/CLIENT
- │   ├── managed_device: nome amigável e observações
- │   └── audit_log: auditoria local sem segredos
- └── MikrotikGateway
-     ├── MockMikrotikGateway
-     └── RouterOsRestGateway
-         └── RouterOsRestClient → HTTPS GET /rest → RouterOS
-
-Spring services
- ├── RouterSnapshotService (uma observação batched e imutável)
- ├── ReconciliationService (comparação, sem correção)
- ├── WriteReadinessService (diagnóstico futuro)
- └── OperationPlanningService (dry-run, sem executor)
+ │   ├── metadados locais
+ │   └── audit_log sem segredos
+ ├── RouterOsRestGateway
+ │   └── HTTPS GET com credenciais de leitura
+ └── DeviceBlockExecutionService
+     ├── snapshot + replan + preconditions
+     └── RouterOsWriteClient
+         └── HTTPS PUT/DELETE allowlisted com credenciais de escrita
+                              │
+                              ▼
+                         RouterOS 7
 ```
 
-O frontend não conhece JSON RouterOS, TLS, Basic Auth, paths REST ou credenciais.
-O backend monta a origem HTTPS a partir de host/porta; ele nunca aceita URL
-RouterOS arbitrária do browser.
+O frontend não conhece JSON RouterOS, TLS, Basic Auth, paths remotos, `.id`,
+ownership ou credenciais. Ele envia apenas a intenção do operador à API local.
+O backend não aceita URL RouterOS arbitrária nem body RouterOS vindo do
+navegador.
 
-## Seleção de gateway
+Há dois pares de credenciais no backend: um para leitura e um para a escrita
+de bloqueio. O par de leitura nunca é usado como fallback para o par de
+escrita. Os segredos ficam somente no processo backend/configuração local e
+nunca chegam ao frontend, SQLite, auditoria ou log.
 
-| Configuração | Gateway | Comportamento |
+## Gateways e allow-list de transporte
+
+| Modo | Leitura | Mutação de bloqueio |
 | --- | --- | --- |
-| `MIKROTIK_MOCK_MODE=true` | `MockMikrotikGateway` | fixtures em memória; nenhuma conexão de rede |
-| `MIKROTIK_MOCK_MODE=false` | `RouterOsRestGateway` | leitura real HTTPS REST |
+| `MIKROTIK_MOCK_MODE=true` | fixture em memória | mock local, sem rede |
+| `MIKROTIK_MOCK_MODE=false` | `RouterOsRestGateway` por HTTPS | `RouterOsWriteClient` com shape fixo |
 
-O antigo gateway indisponível da Fase 1 não participa mais da configuração. Uma
-falha de rede do gateway real é representada por status desconectado ou erro
-sanitizado, sem derrubar serviços SQLite locais.
+O gateway de escrita é intencionalmente estreito. Não recebe `HttpMethod`,
+path, comando, `.id` ou DTO arbitrário:
 
-## Fronteira RouterOS
+- bloquear faz um `PUT /rest/ip/firewall/filter` com `chain`, `action`,
+  `src-mac-address`, `comment`, `disabled` e, quando resolvido, `place-before`;
+- liberar faz um `DELETE /rest/ip/firewall/filter/<id>` após o serviço resolver
+  um único `.id` gerenciado no snapshot imediatamente anterior;
+- qualquer erro de transporte pode significar que a requisição alcançou o
+  roteador e é tratado como resultado desconhecido, não como autorização para
+  repetir.
 
-`MikrotikGateway` expõe modelos de domínio (`RouterInterface`, `RouterDevice`,
-`SpeedLimit`, `TrafficRate` e `GatewayConnectionStatus`), não `JsonNode`,
-`Map<String, Object>` ou DTOs de transporte.
+A REST API oficial descreve `PUT` como criação e `DELETE` como remoção por ID.
+[REST API oficial da MikroTik](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
 
-```text
-RouterOsRestClient
-    ↓ DTOs RouterOS com Strings
-RouterOsMapper / RouterOsDhcpMapper / RouterOsSimpleQueueMapper
-    ↓ modelos de domínio
-services → API → frontend
-```
+## Snapshot e planejamento
 
-DTOs ficam em `gateway/routeros/dto` e ignoram propriedades novas/desconhecidas.
-Isso protege o restante da aplicação das particularidades REST: RouterOS
-documenta que valores de objetos JSON são strings, inclusive números e
-booleans. [REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
-
-O cliente REST é read-only por construção: ele oferece coleções `get…`, não um
-método genérico que receba verbo HTTP, body ou comando. Os únicos paths são:
+O executor captura uma observação batched antes de cada operação. O snapshot
+contém interfaces, DHCP servers/leases, dispositivos correlacionados, Simple
+Queues, filtros IPv4 e entradas de address-list observadas. A leitura serve
+para validar o alvo, detectar estado existente, FastTrack e conflitos; ela não
+autoriza a alteração desses recursos.
 
 ```text
-GET /rest/system/resource
-GET /rest/interface
-GET /rest/ip/dhcp-server
-GET /rest/ip/dhcp-server/lease
-GET /rest/queue/simple
-GET /rest/ip/firewall/filter
-GET /rest/ip/firewall/address-list
+intenção { BLOCK_DEVICE | UNBLOCK_DEVICE, MAC }
+                 │
+                 ▼
+snapshot RouterOS novo + metadados SQLite atuais
+                 │
+                 ▼
+ownership + preconditions + replan
+                 │
+                 ├── conflito/no-op → sem mutação
+                 │
+                 ▼
+           uma PUT ou DELETE fixa
+                 │
+                 ▼
+snapshot RouterOS novo + verificação de resultado
+                 │
+                 ▼
+             auditoria local
 ```
 
-**RouterOS HTTP methods used: GET only.** Embora o RouterOS REST também suporte
-verbos mutáveis e comandos via POST, a Fase 3 não os chama.
-[REST API oficial](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+O fingerprint e o timestamp do snapshot são diagnósticos, não locks nem
+tokens de autorização. Um plano de preview pode ficar obsoleto imediatamente;
+o executor não aceita do browser um plano, fingerprint, ownership, estado ou
+precondition como verdade. Isso trata explicitamente o risco TOCTOU.
 
-## Snapshot, ownership e planos
+## Regra de domínio `FIREWALL_MAC_RULE`
 
-Uma ação de reconciliation, write readiness ou dry-run captura uma única
-janela observável dos recursos necessários. Interfaces, DHCP servers, DHCP
-leases, Simple Queues, firewall filters e address lists são buscados no máximo
-uma vez por snapshot e processados em memória; não existe uma request RouterOS
-por dispositivo. O endpoint combinado `GET /api/write-analysis`, usado pela UI,
-captura uma vez, deriva reconciliation e readiness do mesmo `RouterSnapshot` e
-assim não duplica as seis coleções. O status de conexão pode acrescentar uma
-leitura única de `system/resource`. O polling normal continua leve e não chama
-essa análise.
+`ManagedDeviceBlockRule` é uma forma de domínio fixa, não um DTO geral de
+firewall. Para `AA:BB:CC:DD:EE:FF`, os valores desejados são:
 
-```text
-RouterOS
-   │ GET
-   ▼
-RouterSnapshot
-   ├── Ownership analyzer
-   ├── Reconciliation
-   ├── Write readiness
-   └── Operation planner
-               │
-               ▼
-            Dry-run
-               │
-               X  nenhum executor e nenhuma escrita RouterOS
-```
-
-O snapshot contém instante de captura e fingerprint diagnóstico. Ambos tornam
-a natureza efêmera de um plano explícita, mas não são autorização nem lock.
-Qualquer execução de uma fase futura terá de reler e revalidar o estado, pois
-RouterOS pode mudar entre o check e o uso (TOCTOU).
-
-Ownership é definido por comentário completo esperado, nunca por prefixo, nome,
-MAC, IP, target ou .id. `MTMGR:DEVICE:…` (MAC canônico em maiúsculas e com
-hífens, por exemplo `AA-BB-CC-DD-EE-01`) e `MTMGR:PORT:…` são contratos
-centralizados em `ManagedResourceIdentifier`; recurso manual parecido é
-`FOREIGN` ou `UNKNOWN`, não é adotado. O nome convencionado de uma queue serve
-apenas para detectar colisão.
-
-A reconciliation distingue `IN_SYNC`, `DRIFTED`, `MISSING`, `CONFLICT`,
-`AMBIGUOUS_OWNERSHIP` e `NOT_APPLICABLE`. `DRIFTED` pressupõe ownership
-confirmado e configuração divergente; `CONFLICT` representa recurso
-foreign/não comprovado que compete pelo nome ou target, inclusive quando o
-target CIDR é igual, subnet, supernet ou sobreposto ao CIDR local, e bloqueia
-uma futura mutação. Encontrar dois comentários esperados iguais é ambiguidade
-bloqueante, e nunca seleciona silenciosamente um deles. Overlap é somente
-evidência de conflito; ownership continua dependendo do comentário exato.
-
-Readiness valida portas a partir do estado local: somente CLIENT habilitada é
-candidata às futuras operações de banda. WAN e CLIENT desabilitada podem ser
-`NOT_APPLICABLE` sem bloquear; CLIENT habilitada com CIDR ausente ou inválido
-produz `MANAGED_PORTS_VALID` bloqueante. A resposta combinada expõe o fingerprint
-do snapshot para permitir verificar que as duas visões pertencem à mesma leitura.
-
-O planner recebe uma intenção tipada, mas recompõe ownership, estado e
-preconditions a partir do snapshot e SQLite atuais. Suporta dry-run de
-`BLOCK_DEVICE`, `UNBLOCK_DEVICE`, `SET_PORT_SPEED` e `SET_DEVICE_SPEED`.
-Cada plano tem avisos/conflitos, `generatedAt` e fingerprint; é sempre
-`executable=false` na Fase 3. Um no-op pode ser `changeRequired=false` e não
-é tratado como erro. A criação do plano gera a auditoria funcional resumida
-`OPERATION_PLAN_CREATED`, sem payload, credenciais, JSON RouterOS ou dumps;
-reconciliation permanece efêmera para não poluir o histórico.
-
-## Dados e correlação
-
-### Configuração local de portas
-
-O RouterOS descobre interfaces por `GET /rest/interface`; ele é a fonte de
-verdade apenas para a existência e o estado observado delas. Uma interface
-Ethernet nova sem registro em `managed_port` é não gerenciada e continua visível em
-**Configurações → Interfaces descobertas**. O operador pode então persistir
-nome amigável, descrição, CIDR, DHCP server, visibilidade e papel local no
-SQLite por `PUT /api/ports/{interface}`.
-
-```text
-RouterOS descobre interface → configuração local → SQLite → dashboard
-```
-
-`WAN` e `CLIENT` são papéis locais, não características inferidas do nome ou
-tipo físico da interface. O dashboard escolhe a Internet pelo papel `WAN` e
-lista portas de cliente habilitadas pelo papel `CLIENT`; não há regra de que
-`ether1` seja Internet. A atribuição de papel não altera rota, NAT, DHCP
-client, interface list, firewall nem qualquer outro estado RouterOS. O fixture
-de mock pode declarar `ether1` como WAN, mas isso não é lógica de runtime.
-
-Como essa persistência ocorre somente no SQLite, ela permanece disponível em
-modo real read-only. A API local pode usar `PUT`; a restrição GET-only se aplica
-ao transporte entre backend e RouterOS.
-
-`RouterOsMapper` preserva `name`, `type`, `running` e `disabled` de interfaces.
-Tráfego instantâneo permanece indisponível: byte counters acumulados não são
-convertidos sem uma amostragem explícita e testada.
-
-`RouterOsDhcpMapper` constrói uma vez o mapa DHCP server → interface e processa
-as leases em memória:
-
-```text
-lease.server → DHCP server.name → DHCP server.interface → RouterDevice.interfaceName
-```
-
-Não há query por lease. MAC é normalizado pela regra central da aplicação;
-lease sem MAC válido ou sem associação server/interface é ignorado de forma
-isolada e gera warning sanitizado. `block-access=true` vira `BLOCKED`,
-`status=bound` vira `ONLINE` quando não bloqueado, e demais estados são
-`UNKNOWN`. O CIDR local funciona apenas como conferência posterior.
-[DHCP oficial](https://manual.mikrotik.com/docs/network-management/dhcp/)
-
-`RouterOsSimpleQueueMapper` observa queues e a reconciliation somente confirma
-ownership quando o comentário é exatamente `MTMGR:PORT:<interface>`. Queue
-manual não é adotada; target CIDR sobreposto à rede local gera conflito
-`FOREIGN` bloqueante, sem alterar ownership. `max-limit` RouterOS é
-`upload/download`, enquanto o domínio usa `download/upload`; a inversão ocorre
-uma única vez no parser da fronteira e tem teste de direção.
-[Queues oficiais](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
-
-## Status, polling e diagnóstico
-
-`connectionStatus()` mede uma leitura de `/rest/system/resource` e devolve
-versão/latência aproximada. É o caminho leve para polling de status; ele não lê
-DHCP, interfaces, queues ou firewall.
-
-O frontend faz polling de `/api/ports` enquanto conectado e deriva a lista
-global de dispositivos das portas retornadas, evitando uma chamada simultânea
-desnecessária a `/api/devices`. A API `GET /api/devices` continua disponível.
-
-`MikrotikDiagnosticsGateway` separa checagens por recurso sob demanda:
-
-| Check | Leitura |
+| Campo | Valor |
 | --- | --- |
-| REST API | `system/resource` |
-| Interfaces | `interface` |
-| DHCP | DHCP servers + leases correlacionadas |
-| Queues | `queue/simple` |
-| FastTrack | `ip/firewall/filter` |
-| Address lists | `ip/firewall/address-list`, inventário do snapshot e correlação estreita de filtro manual ativo em `chain=forward` com `drop`/`reject` que referencia a entrada exata; `chain=input` não é bloqueio de cliente e nunca há decisão de estratégia ou remoção |
+| `chain` | `forward` |
+| `action` | `drop` |
+| `src-mac-address` | `AA:BB:CC:DD:EE:FF` |
+| `comment` | `MTMGR:DEVICE:AA-BB-CC-DD-EE-FF` |
+| `disabled` | `false` |
+| `dynamic` | `false` |
 
-FastTrack só é consultado em diagnóstico, readiness ou plano sob demanda. Regra habilitada com
-`action=fasttrack-connection` é informada, nunca alterada. Isso é relevante
-porque FastTrack pode ignorar Simple Queues e outras facilidades L3.
-[Packet Flow oficial](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+`dynamic=false` é conferido na leitura. A aplicação não converte uma regra
+dinâmica em estática. Nenhum campo de IP, address-list, NAT, IPv6 ou ação
+alternativa é acrescentado.
 
-Lista vazia de queues é um sucesso. Cada check pode falhar independentemente;
-por exemplo, REST/system resource pode funcionar enquanto DHCP falha.
+O comentário é produzido por um identificador central e comparado por igualdade
+exata. MAC, IP, nome, target, posição ou `.id` isolados nunca dão ownership.
+Esse contrato também evita que uma regra manual parecida seja apagada durante
+uma liberação.
 
-## Segurança
+## Ordem do firewall
 
-Em modo real, a segurança contra escrita acidental é redundante:
+O filtro `forward` processa as regras de cima para baixo. Na captura anterior à
+criação, o serviço encontra a primeira regra `forward` estática e usa seu `.id`
+como `place-before`. Se não existir uma regra forward estática, o campo não é
+enviado; ainda assim a ordem é validada na releitura.
 
-1. Usuário RouterOS dedicado com `read,rest-api`, sem `write`.
-2. `MIKROTIK_WRITE_ENABLED=false` por padrão.
-3. `MikrotikWriteGuard` recusa APIs de mutação RouterOS quando escrita está
-   desabilitada.
-4. `RouterOsRestGateway` sempre lança `WRITE_NOT_IMPLEMENTED` antes de rede
-   para `setPortSpeed`, `setDeviceSpeed`, `blockDevice` e `unblockDevice`, mesmo
-   se `writeEnabled=true`.
-5. Planner, reconciliation e readiness dependem somente de snapshots; não têm
-   mecanismo de execução, auto-reparo ou adoção de recurso.
+Depois da `PUT`, o serviço captura o firewall novamente e exige exatamente uma
+regra MTMGR para o MAC, com shape correto, antes de todas as demais regras
+forward estáticas. Se não puder provar a posição, responde falha de posição e
+não tenta criar outra regra. Regras dinâmicas não são âncoras nem entram nessa
+comparação. [Firewall oficial da MikroTik](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/firewall/)
+e [Console oficial da MikroTik](https://manual.mikrotik.com/docs/management-tools/console/)
 
-As mutações **locais** não passam pelo guard: metadados e configuração de portas
-continuam graváveis no SQLite.
+## Ownership e reconciliação de bloqueio
 
-Basic Auth fica somente no cliente backend. `MikrotikProperties.toString()`
-mascara senha; falhas e logs RouterOS não incluem senha, header Authorization,
-body remoto nem stack trace na resposta API.
+O estado de bloqueio usa estas regras:
 
-Com `verifySsl=true`, o TLS verifica certificado e hostname/IP usando o
-truststore da JVM que executa o backend — em instalações padrão, normalmente o
-`cacerts` do JDK/JRE desse processo. A CA/certificado do RouterOS deve ser
-confiável por esse truststore, ou a JVM deve ser iniciada com um truststore
-explicitamente configurado. `verifySsl=false` é uma exceção isolada no
-`RouterOsRestClient` para desenvolvimento local com self-signed não confiável;
-não instala trust-all global na JVM. Timeouts padrão são 3 s para conectar e 5
-s para resposta.
+| Observação | Decisão arquitetural |
+| --- | --- |
+| uma regra, comentário exato e shape completo | `MANAGED`, estado desejado |
+| comentário exato, mas chain/action/MAC/disabled/dynamic divergente | drift bloqueante; não corrigir |
+| comentário ausente ou diferente, bloqueio manual/foreign | conflito; não adotar nem remover |
+| duas ou mais regras com comentário exato | ownership ambíguo; não escolher uma |
+| nenhum bloqueio gerenciado e nenhum conflito | elegível para criar ou no-op de liberação |
 
-401/403 viram falha de autenticação/permissão; indisponibilidade, TLS e payload
-inesperado são categorias separadas e sanitizadas. Consulte
-[routeros-readonly-integration.md](routeros-readonly-integration.md) para a
-tabela de erros e configuração.
+Um filtro `input` é tráfego destinado ao roteador, não um bloqueio do cliente.
+O reconhecimento de bloqueio externo é deliberadamente estreito e somente
+defensivo: a existência de uma regra manual não se transforma em ownership do
+painel. Também não se cria segunda regra quando já há um bloqueio DHCP ou
+foreign reconhecido.
+
+Para liberação, o executor só remove o `.id` de uma única regra com comentário
+exato e shape aceitável. Não remove por nome, índice, primeiro resultado ou
+comentário genérico.
+
+## Idempotência, lock e resultado desconhecido
+
+O serviço mantém lock por MAC e define idempotência pelo estado releído:
+
+- bloquear uma regra gerenciada única, correta e bem posicionada é no-op;
+- liberar sem regra gerenciada nem conflito é no-op;
+- drift, foreign/manual, duplicidade ou estado ambíguo são bloqueios, não
+  oportunidades de reparo;
+- um `404` ao remover é relido: se a regra já não existir, a liberação é
+  confirmada como no-op.
+
+Após cada possível mutação há uma releitura. Se o transporte falhar após
+`PUT`/`DELETE`, o resultado fica `OUTCOME_UNKNOWN`; uma releitura pode confirmar
+sucesso somente pelos critérios acima. Duplicidade, shape divergente, ordem
+insegura, regra ainda presente ou falha de releitura continuam inconclusivos e
+retornam erro operacional. Não há retry cego, compensação automática ou nova
+mutação para “tentar mais uma vez”.
+
+## FastTrack
+
+O snapshot detecta regras ativas `action=fasttrack-connection`. Em planos de
+bloqueio/liberação, a precondition e o warning usam o código exato
+`FASTTRACK_EXISTING_CONNECTIONS`. A mensagem informa que conexões já
+FastTracked podem continuar até serem fechadas ou expirarem.
+
+A regra MAC atua sobre pacotes que chegam ao filtro `forward`; FastTrack pode
+fazer pacotes de uma conexão já FastTracked ignorarem o firewall. Fase 4 não
+desabilita FastTrack, não move a regra, não limpa connection tracking e não
+cria exceções. [Packet Flow oficial da MikroTik](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
+
+## Credenciais e flags
+
+O setup RouterOS cria dois usuários/grupos, com acesso restrito ao backend:
+
+```routeros
+/user/group/add name=mtmgr-read policy=read,rest-api
+/user/add name=mtmgr-read group=mtmgr-read address=<IP-DO-BACKEND>/32 password=<senha-de-leitura>
+
+/user/group/add name=mtmgr-write policy=read,write,rest-api
+/user/add name=mtmgr-write group=mtmgr-write address=<IP-DO-BACKEND>/32 password=<senha-de-escrita>
+```
+
+O grupo de escrita é customizado e contém somente `read,write,rest-api`; não
+recebe `policy`, `reboot`, `sensitive`, `sniff`, `ftp`, `ssh`, `telnet` ou
+`winbox`. `MIKROTIK_USERNAME`/`MIKROTIK_PASSWORD` apontam para leitura;
+`MIKROTIK_WRITE_USERNAME`/`MIKROTIK_WRITE_PASSWORD`, para escrita. [User e policies oficiais da MikroTik](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+
+Os defaults são:
+
+```dotenv
+MIKROTIK_WRITE_ENABLED=false
+MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED=false
+```
+
+Em modo real, ambas precisam ser `true` e o par de escrita precisa estar
+configurado. As duas condições são necessárias; uma não substitui a outra.
+Mock mode não é evidência de autorização nem validação de um roteador físico.
+
+## Auditoria e falhas
+
+O serviço registra em SQLite `BLOCK_DEVICE`/`UNBLOCK_DEVICE`, alvo `DEVICE`,
+MAC normalizado, estado anterior, estado seguinte, sucesso e código de erro.
+No-op é registrado; preview gera apenas `OPERATION_PLAN_CREATED`. Não são
+persistidos segredos, Authorization, body, snapshot bruto ou dumps RouterOS.
+
+Falha de auditoria não dispara retry da mutação. Falhas de autenticação,
+permissão, flags, resultado desconhecido, conflito ou pós-verificação são
+devolvidas com mensagens sanitizadas e exigem decisão operacional conforme o
+guia de [bloqueio e rollback](routeros-device-blocking.md).
 
 ## Fora do escopo
 
-Não há escrita RouterOS, tráfego instantâneo por monitor/POST, bloqueio real,
-alteração de DHCP, criação/alteração/remoção de queues ou address lists, mudança
-de firewall ou FastTrack, nem configuração de bridge, IP, NAT, rota, VLAN ou
-DNS. Não há executor, confirmação de execução, auto-reparo ou adoção de
-recursos.
+A Fase 4 não altera:
 
-A estratégia de bloqueio permanece `UNDECIDED`: a Fase 4 deverá escolher entre
-DHCP `block-access` e firewall/address-list de acordo com a topologia real e a
-documentação RouterOS. A Fase 3 não escolhe nem implementa essa estratégia.
+- DHCP ou leases (`block-access`, `make-static`, rate-limit ou remoção);
+- Simple Queues, Queue Tree, PCQ ou qualquer limite de velocidade;
+- FastTrack;
+- NAT, rotas, bridge, interface, VLAN, DNS ou IPv6;
+- address-lists, filtros que não sejam a regra MAC allow-listed ou qualquer
+  outro menu RouterOS.
 
-Physical RouterOS validation: **not performed in this workspace.**
+Também não há adoção automática de configuração manual, auto-reparo,
+reordenação de regra drifted, retry cego ou validação física já realizada.
+
+Physical Phase 4 write validation: NOT RUN
+
+A Fase 5 não foi iniciada.
+
+## Fontes oficiais da MikroTik
+
+- [REST API](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+- [Firewall Filter](https://manual.mikrotik.com/docs/cli-reference/ip/firewall/filter/)
+- [Packet Flow — FastTrack](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
+- [User e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+- [Configuration Management](https://manual.mikrotik.com/docs/getting-started/configuration-management/)

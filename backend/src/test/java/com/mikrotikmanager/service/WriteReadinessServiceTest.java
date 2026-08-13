@@ -44,7 +44,7 @@ class WriteReadinessServiceTest {
 
         WriteReadinessReport result = service(false, gateway, reconciliation).analyze();
 
-        assertThat(result.readyForFutureExecution()).isTrue();
+        assertThat(result.readyForFutureExecution()).isFalse();
         assertThat(result.executionEnabled()).isFalse();
         assertThat(result.writeFlagEnabled()).isFalse();
         assertThat(result.generatedAt()).isEqualTo(NOW);
@@ -73,7 +73,7 @@ class WriteReadinessServiceTest {
 
         WriteReadinessReport result = service(false, gateway, reconciliation).analyze();
 
-        assertThat(result.readyForFutureExecution()).isTrue();
+        assertThat(result.readyForFutureExecution()).isFalse();
         assertThat(check(result, "FASTTRACK_BANDWIDTH_WARNING"))
                 .extracting(ReadinessCheck::satisfied, ReadinessCheck::severity, ReadinessCheck::detail)
                 .containsExactly(false, ReadinessSeverity.WARNING,
@@ -95,7 +95,7 @@ class WriteReadinessServiceTest {
         WriteReadinessReport result = service(false, gateway, reconciliation, "very-secret-password",
                 List.of(wanPort(), clientEnabledPort(), clientDisabledPort())).analyze();
 
-        assertThat(result.readyForFutureExecution()).isTrue();
+        assertThat(result.readyForFutureExecution()).isFalse();
         assertThat(result.executionEnabled()).isFalse();
         assertThat(check(result, "MANAGED_PORTS_VALID"))
                 .extracting(ReadinessCheck::satisfied, ReadinessCheck::severity)
@@ -161,7 +161,7 @@ class WriteReadinessServiceTest {
 
         WriteReadinessReport result = service(false, gateway, reconciliation).analyze(connection, reconciliationReport);
 
-        assertThat(result.readyForFutureExecution()).isTrue();
+        assertThat(result.readyForFutureExecution()).isFalse();
         assertThat(result.summary())
                 .extracting(s -> s.managedPorts(), s -> s.validManagedPorts())
                 .containsExactly(1, 1);

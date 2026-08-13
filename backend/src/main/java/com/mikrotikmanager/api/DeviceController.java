@@ -5,6 +5,7 @@ import com.mikrotikmanager.api.dto.SpeedLimitRequest;
 import com.mikrotikmanager.api.dto.UpdateDeviceRequest;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.service.DeviceService;
+import com.mikrotikmanager.service.DeviceBlockExecutionService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,9 +22,11 @@ import java.util.List;
 @RequestMapping("/api/devices")
 public class DeviceController {
     private final DeviceService deviceService;
+    private final DeviceBlockExecutionService deviceBlockExecutionService;
 
-    public DeviceController(DeviceService deviceService) {
+    public DeviceController(DeviceService deviceService, DeviceBlockExecutionService deviceBlockExecutionService) {
         this.deviceService = deviceService;
+        this.deviceBlockExecutionService = deviceBlockExecutionService;
     }
 
     @GetMapping
@@ -49,11 +52,11 @@ public class DeviceController {
 
     @PostMapping("/{macAddress}/block")
     public DeviceResponse block(@PathVariable String macAddress) {
-        return ResponseMapper.device(deviceService.block(macAddress));
+        return ResponseMapper.device(deviceBlockExecutionService.block(macAddress));
     }
 
     @DeleteMapping("/{macAddress}/block")
     public DeviceResponse unblock(@PathVariable String macAddress) {
-        return ResponseMapper.device(deviceService.unblock(macAddress));
+        return ResponseMapper.device(deviceBlockExecutionService.unblock(macAddress));
     }
 }

@@ -25,7 +25,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Builds an on-demand, read-only preflight report for a later write phase.
+ * Builds an on-demand, read-only preflight report for the explicitly enabled
+ * Phase 4 device-block write capability.
  *
  * <p>The service deliberately reuses the single snapshot captured by
  * {@link ReconciliationService}; it never requests a second snapshot, calls a
@@ -68,7 +69,8 @@ public class WriteReadinessService {
 
     /**
      * Produces an observational report. It never makes RouterOS executable in
-     * Phase 3, including when {@code mikrotik.write-enabled=true}.
+     * Phase 4 writes are never performed by this diagnostic service, including
+     * when both write flags are enabled.
      */
     public WriteReadinessReport analyze() {
         GatewayConnectionStatus connection = connectionStatus();
@@ -95,7 +97,7 @@ public class WriteReadinessService {
      * Produces readiness from an already-captured reconciliation, reusing the
      * same RouterOS observation. Used by the combined write-analysis endpoint
      * so readiness and reconciliation are guaranteed to share one snapshot.
-     * It never requests another snapshot and never enables RouterOS execution.
+     * It never requests another snapshot or performs a RouterOS write.
      */
     public WriteReadinessReport analyze(GatewayConnectionStatus connection, ReconciliationReport reconciliation) {
         Objects.requireNonNull(connection, "connection");
@@ -135,6 +137,12 @@ public class WriteReadinessService {
                 "A conexão de leitura com RouterOS foi confirmada."));
         checks.add(modeCheck(connection));
         checks.add(writeFlagCheck());
+        checks.add(deviceBlockWriteFlagCheck());
+        checks.add(writeCredentialsCheck(connection));
+        checks.add(check("BLOCKING_STRATEGY", "Estratégia de bloqueio", true, ReadinessSeverity.INFO,
+                "FIREWALL_MAC_RULE: uma regra drop forward por MAC com comentário MTMGR exato."));
+        checks.add(check("FIREWALL_ORDERING_ANALYZABLE", "Ordem do firewall", true, ReadinessSeverity.INFO,
+                "A lista /ip/firewall/filter será relida e a posição será comprovada após cada escrita."));
         checks.add(check("INTERFACES_READABLE", "Interfaces", reconciliation.observedInterfaceCount() > 0,
                 reconciliation.observedInterfaceCount() > 0 ? ReadinessSeverity.INFO : ReadinessSeverity.BLOCKING,
                 reconciliation.observedInterfaceCount() > 0
@@ -157,10 +165,12 @@ public class WriteReadinessService {
         checks.add(check("RECONCILIATION_SUMMARY", "Reconciliação", true, ReadinessSeverity.INFO,
                 reconciliationSummaryDetail(reconciliation)));
 
-        boolean phaseConfigurationSafe = !connection.mockMode() && !properties.writeEnabled();
-        boolean readyForFutureExecution = phaseConfigurationSafe && !hasBlockingFinding(checks);
+        boolean executionEnabled = connection.mockMode() || (properties.writeEnabled()
+                && properties.deviceBlockWritesEnabled() && properties.writeCredentialsConfigured());
+        boolean readyForFutureExecution = executionEnabled && !hasBlockingFinding(checks);
         return new WriteReadinessReport(Instant.now(clock), connection.mockMode(), properties.writeEnabled(),
-                readyForFutureExecution, false, WriteReadinessReport.PHASE_3_EXECUTION_DISABLED_NOTICE, checks, summary);
+                readyForFutureExecution, executionEnabled, WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, summary,
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", true);
     }
 
     private WriteReadinessReport unavailableReport(GatewayConnectionStatus connection) {
@@ -168,7 +178,8 @@ public class WriteReadinessService {
         List<ReadinessCheck> checks = unavailableChecks(mockMode,
                 "RouterOS não está conectado; a análise observacional não foi executada.");
         return new WriteReadinessReport(Instant.now(clock), mockMode, properties.writeEnabled(), false, false,
-                WriteReadinessReport.PHASE_3_EXECUTION_DISABLED_NOTICE, checks, emptySummary());
+                WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, emptySummary(),
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false);
     }
 
     private WriteReadinessReport analysisUnavailableReport(GatewayConnectionStatus connection) {
@@ -177,7 +188,8 @@ public class WriteReadinessService {
         checks.set(0, check("ROUTEROS_CONNECTED", "RouterOS conectado", true, ReadinessSeverity.INFO,
                 "A conexão de leitura foi confirmada, mas a análise não pôde obter um snapshot completo."));
         return new WriteReadinessReport(Instant.now(clock), connection.mockMode(), properties.writeEnabled(), false, false,
-                WriteReadinessReport.PHASE_3_EXECUTION_DISABLED_NOTICE, checks, emptySummary());
+                WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, emptySummary(),
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false);
     }
 
     private List<ReadinessCheck> unavailableChecks(boolean mockMode, String connectionDetail) {
@@ -185,6 +197,16 @@ public class WriteReadinessService {
         checks.add(check("ROUTEROS_CONNECTED", "RouterOS conectado", false, ReadinessSeverity.BLOCKING, connectionDetail));
         checks.add(modeCheck(mockMode));
         checks.add(writeFlagCheck());
+        checks.add(deviceBlockWriteFlagCheck());
+        checks.add(check("BLOCKING_STRATEGY", "Estratégia de bloqueio", true, ReadinessSeverity.INFO,
+                "FIREWALL_MAC_RULE: uma regra drop forward por MAC com comentário MTMGR exato."));
+        checks.add(check("FIREWALL_ORDERING_ANALYZABLE", "Ordem do firewall", false, ReadinessSeverity.BLOCKING,
+                "A ordem do firewall não foi analisada porque o snapshot RouterOS está indisponível."));
+        checks.add(check("WRITE_CREDENTIALS_CONFIGURED", "Credenciais de escrita", mockMode || properties.writeCredentialsConfigured(),
+                mockMode || properties.writeCredentialsConfigured() ? ReadinessSeverity.INFO : ReadinessSeverity.BLOCKING,
+                mockMode ? "Mock mode não exige credenciais de escrita."
+                        : properties.writeCredentialsConfigured() ? "Credenciais separadas de escrita configuradas."
+                        : "As credenciais de escrita são obrigatórias e não usam fallback das credenciais de leitura."));
         checks.add(unavailableCheck("INTERFACES_READABLE", "Interfaces"));
         checks.add(unavailableCheck("DHCP_READABLE", "DHCP"));
         checks.add(unavailableCheck("QUEUES_READABLE", "Simple Queues"));
@@ -214,7 +236,24 @@ public class WriteReadinessService {
                 disabled ? ReadinessSeverity.INFO : ReadinessSeverity.WARNING,
                 disabled
                         ? "MIKROTIK_WRITE_ENABLED permanece desabilitada."
-                        : "MIKROTIK_WRITE_ENABLED está ativa, mas a execução RouterOS continua desabilitada na Fase 3.");
+                        : "MIKROTIK_WRITE_ENABLED está ativa; a execução ainda exige a segunda flag e credenciais separadas.");
+    }
+
+    private ReadinessCheck deviceBlockWriteFlagCheck() {
+        boolean enabled = properties.deviceBlockWritesEnabled();
+        return check("DEVICE_BLOCK_WRITE_FLAG", "Write flag de bloqueio", enabled,
+                enabled ? ReadinessSeverity.INFO : ReadinessSeverity.WARNING,
+                enabled ? "MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED está ativa para FIREWALL_MAC_RULE."
+                        : "MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED permanece desabilitada.");
+    }
+
+    private ReadinessCheck writeCredentialsCheck(GatewayConnectionStatus connection) {
+        boolean configured = connection.mockMode() || properties.writeCredentialsConfigured();
+        return check("WRITE_CREDENTIALS_CONFIGURED", "Credenciais de escrita", configured,
+                configured ? ReadinessSeverity.INFO : ReadinessSeverity.BLOCKING,
+                configured ? (connection.mockMode() ? "Mock mode não exige credenciais de escrita."
+                        : "Credenciais separadas de escrita configuradas.")
+                        : "As credenciais de escrita são obrigatórias e não usam fallback das credenciais de leitura.");
     }
 
     private ReadinessCheck fastTrackBandwidthCheck(boolean detected) {

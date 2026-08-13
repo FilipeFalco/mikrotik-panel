@@ -47,7 +47,7 @@ class OperationPlanningServiceTest {
     private static final SpeedLimit PORT_LIMIT = new SpeedLimit(100_000_000L, 20_000_000L);
 
     @Test
-    void generatesABlockDryRunForABoundDeviceButNeverAnExecutablePlan() {
+    void generatesAFirewallMacBlockDryRunButNeverAnExecutablePlan() {
         RouterSnapshot snapshot = snapshot(PORT_LIMIT, false, false, null, SpeedLimit.UNLIMITED);
         PlanningHarness harness = harness(snapshot);
 
@@ -59,14 +59,14 @@ class OperationPlanningServiceTest {
         assertThat(plan.currentState().interfaceName()).isEqualTo(INTERFACE);
         assertThat(plan.changeRequired()).isTrue();
         assertThat(plan.executable()).isFalse();
-        assertThat(plan.readyForFutureExecution()).isFalse();
+        assertThat(plan.readyForFutureExecution()).isTrue();
         assertThat(precondition(plan, "DEVICE_EXISTS").satisfied()).isTrue();
         assertThat(precondition(plan, "LEASE_BOUND").satisfied()).isTrue();
         assertThat(precondition(plan, "BLOCKING_STRATEGY_DECIDED"))
                 .extracting(PlanPrecondition::satisfied, PlanPrecondition::severity)
-                .containsExactly(false, PlanSeverity.BLOCKING);
-        assertThat(warning(plan, "BLOCKING_STRATEGY_UNDECIDED")).isNotNull();
-        assertThat(plan.plannedChanges()).singleElement().extracting(change -> change.action()).isEqualTo("CANDIDATE");
+                .containsExactly(true, PlanSeverity.INFO);
+        assertThat(plan.warnings()).noneMatch(warning -> "BLOCKING_STRATEGY_UNDECIDED".equals(warning.code()));
+        assertThat(plan.plannedChanges()).singleElement().extracting(change -> change.action()).isEqualTo("CREATE_FIREWALL_MAC_RULE");
 
         harness.assertOnlyReadPlanningDependenciesUsed(snapshot);
     }

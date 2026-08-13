@@ -9,11 +9,18 @@ public record RouterFirewallFilter(
         boolean disabled,
         boolean dynamic,
         String srcAddress,
-        String srcAddressList
+        String srcAddressList,
+        String srcMacAddress
 ) {
     /** Compatibility constructor for fixtures that only need FastTrack state. */
     public RouterFirewallFilter(String id, String action, String chain, String comment, boolean disabled, boolean dynamic) {
-        this(id, action, chain, comment, disabled, dynamic, null, null);
+        this(id, action, chain, comment, disabled, dynamic, null, null, null);
+    }
+
+    /** Compatibility constructor for the previous eight-field domain shape. */
+    public RouterFirewallFilter(String id, String action, String chain, String comment, boolean disabled, boolean dynamic,
+                                String srcAddress, String srcAddressList) {
+        this(id, action, chain, comment, disabled, dynamic, srcAddress, srcAddressList, null);
     }
 
     public boolean isActiveFastTrack() {

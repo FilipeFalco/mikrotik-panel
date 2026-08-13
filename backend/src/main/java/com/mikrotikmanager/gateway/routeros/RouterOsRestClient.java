@@ -224,8 +224,12 @@ public final class RouterOsRestClient {
     }
 
     private static void applyBasicAuthentication(HttpHeaders headers, MikrotikProperties properties) {
-        String username = properties.username() == null ? "" : properties.username();
-        String password = properties.password() == null ? "" : properties.password();
+        applyBasicAuthentication(headers, properties.username(), properties.password());
+    }
+
+    static void applyBasicAuthentication(HttpHeaders headers, String username, String password) {
+        username = username == null ? "" : username;
+        password = password == null ? "" : password;
         headers.setBasicAuth(username, password);
     }
 
@@ -242,7 +246,7 @@ public final class RouterOsRestClient {
         }
     }
 
-    private static String buildRouterOrigin(String host, int port) {
+    static String buildRouterOrigin(String host, int port) {
         String normalizedHost = normalizeHost(host);
         if (port < 1 || port > 65_535) {
             throw new IllegalArgumentException("mikrotik.port must be between 1 and 65535");

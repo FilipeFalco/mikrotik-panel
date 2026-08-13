@@ -2,6 +2,9 @@ package com.mikrotikmanager.gateway.routeros;
 
 import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
+import com.mikrotikmanager.domain.DeviceBlockObservation;
+import com.mikrotikmanager.domain.DeviceStatus;
+import com.mikrotikmanager.domain.ManagedDeviceBlockRule;
 import com.mikrotikmanager.domain.GatewayDiagnosticCheck;
 import com.mikrotikmanager.domain.GatewayDiagnostics;
 import com.mikrotikmanager.domain.RouterAddressListEntry;
@@ -12,6 +15,7 @@ import com.mikrotikmanager.domain.RouterFirewallFilter;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.RouterSimpleQueue;
 import com.mikrotikmanager.domain.RouterSnapshot;
+import com.mikrotikmanager.domain.ResourceOwnership;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.gateway.GatewayErrorType;
 import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
@@ -37,12 +41,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Real RouterOS implementation for Phase 3.
+ * Real RouterOS read gateway. Its legacy mutation-shaped methods deliberately
+ * remain unavailable; Phase 4 mutations use {@link RouterOsWriteClient}.
  *
  * <p>Every RouterOS operation in this class delegates to the GET-only
  * {@link RouterOsRestClient}. Its mutation methods deliberately throw before
- * reaching the client, even if {@code mikrotik.write-enabled=true}: RouterOS
- * writes are not implemented in this phase.
+ * reaching the client, even if {@code mikrotik.write-enabled=true}.
  */
 public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagnosticsGateway, RouterSnapshotReader {
     private final MikrotikProperties properties;
@@ -114,6 +118,14 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
     }
 
     @Override
+    public Map<String, DeviceBlockObservation> listDeviceBlockStates() {
+        return read(() -> toBlockStates(readFirewallFilters().stream()
+                .filter(Objects::nonNull)
+                .map(this::toFirewallFilter)
+                .toList()));
+    }
+
+    @Override
     public Optional<RouterDevice> findDevice(String macAddress) {
         String normalizedMac = ManagedResourceIdentifier.normalizeMac(macAddress);
         return listDevices().stream()
@@ -127,7 +139,7 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
     }
 
     /**
-     * Performs the Phase 3 on-demand batch of RouterOS reads once. No caller
+     * Performs one on-demand batch of RouterOS reads. No caller
      * receives a transport DTO and no collection is fetched per device.
      */
     @Override
@@ -186,15 +198,7 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
             List<RouterOsFirewallFilterDto> filterDtos = restClient.getFirewallFilters(RouterOsFirewallFilterDto.class);
             List<RouterFirewallFilter> filters = filterDtos.stream()
                     .filter(Objects::nonNull)
-                    .map(filter -> new RouterFirewallFilter(
-                            RouterOsValueParser.optionalText(filter.id()),
-                            RouterOsValueParser.optionalText(filter.action()),
-                            RouterOsValueParser.optionalText(filter.chain()),
-                            RouterOsValueParser.optionalText(filter.comment()),
-                            RouterOsValueParser.booleanOrDefault(filter.disabled(), false, "ip/firewall/filter.disabled"),
-                            RouterOsValueParser.booleanOrDefault(filter.dynamic(), false, "ip/firewall/filter.dynamic"),
-                            RouterOsValueParser.optionalText(filter.srcAddress()),
-                            RouterOsValueParser.optionalText(filter.srcAddressList())))
+                    .map(this::toFirewallFilter)
                     .toList();
             List<RouterAddressListEntry> addressLists = restClient.getFirewallAddressLists(RouterOsAddressListDto.class).stream()
                     .filter(Objects::nonNull)
@@ -207,8 +211,63 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                             RouterOsValueParser.booleanOrDefault(entry.dynamic(), false, "ip/firewall/address-list.dynamic")))
                     .toList();
             return new RouterSnapshot(Instant.now(), interfaces,
-                    servers, leases, dhcpMapper.toRouterDevices(serverDtos, leaseDtos), queues, filters, addressLists);
+                    servers, leases, mergeBlockStates(dhcpMapper.toRouterDevices(serverDtos, leaseDtos), toBlockStates(filters)),
+                    queues, filters, addressLists);
         });
+    }
+
+    private List<RouterOsFirewallFilterDto> readFirewallFilters() {
+        return restClient.getFirewallFilters(RouterOsFirewallFilterDto.class);
+    }
+
+    private RouterFirewallFilter toFirewallFilter(RouterOsFirewallFilterDto filter) {
+        return new RouterFirewallFilter(
+                RouterOsValueParser.optionalText(filter.id()),
+                RouterOsValueParser.optionalText(filter.action()),
+                RouterOsValueParser.optionalText(filter.chain()),
+                RouterOsValueParser.optionalText(filter.comment()),
+                RouterOsValueParser.booleanOrDefault(filter.disabled(), false, "ip/firewall/filter.disabled"),
+                RouterOsValueParser.booleanOrDefault(filter.dynamic(), false, "ip/firewall/filter.dynamic"),
+                RouterOsValueParser.optionalText(filter.srcAddress()),
+                RouterOsValueParser.optionalText(filter.srcAddressList()),
+                RouterOsValueParser.optionalText(filter.srcMacAddress()));
+    }
+
+    private List<RouterDevice> mergeBlockStates(List<RouterDevice> devices,
+                                                Map<String, DeviceBlockObservation> blockStates) {
+        return devices.stream().map(device -> {
+            DeviceBlockObservation observation = blockStates.get(device.macAddress());
+            if (observation == null || !observation.blocked() || device.blocked()) {
+                return device;
+            }
+            return new RouterDevice(device.leaseId(), device.macAddress(), device.hostname(), device.ipAddress(),
+                    device.dhcpServer(), device.interfaceName(), DeviceStatus.BLOCKED, true, device.leaseComment(),
+                    device.speedLimit(), device.traffic(), device.lastSeenAt());
+        }).toList();
+    }
+
+    private Map<String, DeviceBlockObservation> toBlockStates(List<RouterFirewallFilter> filters) {
+        Map<String, DeviceBlockObservation> observations = new HashMap<>();
+        for (RouterFirewallFilter filter : filters) {
+            if (filter.dynamic() || filter.disabled() || !filter.isActiveForwardBlockingAction()
+                    || filter.srcMacAddress() == null) {
+                continue;
+            }
+            String normalized;
+            try {
+                normalized = ManagedResourceIdentifier.normalizeMac(filter.srcMacAddress());
+            } catch (IllegalArgumentException exception) {
+                continue;
+            }
+            ResourceOwnership ownership = ManagedResourceIdentifier.isOwnedByDevice(filter.comment(), normalized)
+                    ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
+            DeviceBlockObservation current = observations.get(normalized);
+            ResourceOwnership combined = current == null ? ownership
+                    : current.ownership() == ResourceOwnership.MANAGED && ownership == ResourceOwnership.MANAGED
+                    ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
+            observations.put(normalized, new DeviceBlockObservation(true, combined, "FIREWALL_MAC_RULE"));
+        }
+        return Map.copyOf(observations);
     }
 
     @Override
@@ -354,7 +413,7 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
     private MikrotikGatewayException writesNotImplemented() {
         return new MikrotikGatewayException(
                 GatewayErrorType.WRITE_NOT_IMPLEMENTED,
-                "RouterOS write operation is not implemented in Phase 3."
+                "RouterOS write operation is not implemented by the read gateway."
         );
     }
 
@@ -363,7 +422,7 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
             case AUTHENTICATION_FAILED -> "Autenticação no MikroTik falhou ou o usuário não possui permissão de leitura.";
             case TLS_ERROR -> "Não foi possível validar a conexão TLS com o MikroTik.";
             case BAD_RESPONSE -> "O MikroTik retornou uma resposta de leitura inesperada.";
-            case WRITE_NOT_IMPLEMENTED -> "A escrita RouterOS não é implementada na Fase 3.";
+            case WRITE_NOT_IMPLEMENTED -> "A escrita RouterOS não está disponível no cliente de leitura.";
             case UNAVAILABLE -> "Não foi possível comunicar com o MikroTik.";
         };
     }

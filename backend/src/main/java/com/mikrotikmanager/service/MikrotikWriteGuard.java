@@ -29,4 +29,23 @@ public class MikrotikWriteGuard {
         throw new ApiException(ApiErrorCode.MIKROTIK_WRITES_DISABLED, HttpStatus.FORBIDDEN,
                 "As operações de escrita no MikroTik estão desabilitadas para esta instância.");
     }
+
+    /** Fase 4's second, domain-specific write gate. */
+    public void checkDeviceBlockWriteAllowed() {
+        if (properties.mockMode()) {
+            return;
+        }
+        if (!properties.writeEnabled()) {
+            throw new ApiException(ApiErrorCode.MIKROTIK_WRITES_DISABLED, HttpStatus.FORBIDDEN,
+                    "As operações de escrita no MikroTik estão desabilitadas para esta instância.");
+        }
+        if (!properties.deviceBlockWritesEnabled()) {
+            throw new ApiException(ApiErrorCode.DEVICE_BLOCK_WRITES_DISABLED, HttpStatus.FORBIDDEN,
+                    "A escrita de bloqueio de dispositivos está desabilitada para esta instância.");
+        }
+        if (!properties.writeCredentialsConfigured()) {
+            throw new ApiException(ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING, HttpStatus.FORBIDDEN,
+                    "As credenciais separadas de escrita do MikroTik não estão configuradas.");
+        }
+    }
 }

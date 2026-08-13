@@ -76,7 +76,7 @@ export function Settings({
           <div><p className="eyebrow">Segurança de escrita</p><h2 id="write-readiness-title">Preparação para futuras alterações</h2></div>
           {onAnalyzeRouterOS && <button type="button" className="button secondary" onClick={onAnalyzeRouterOS} disabled={analyzing}>{analyzing ? 'Analisando…' : readiness || reconciliation ? 'Atualizar análise' : 'Analisar RouterOS'}</button>}
         </div>
-        <div className="notice info local-only-notice"><strong>Execução RouterOS permanece desabilitada nesta fase.</strong><span>{readiness?.phaseNotice ?? 'A análise é sob demanda e usa somente leituras do RouterOS.'}</span></div>
+        <div className="notice info local-only-notice"><strong>A Fase 4 permite somente bloqueio/liberação controlados.</strong><span>{readiness?.phaseNotice ?? 'A análise é sob demanda e usa somente leituras do RouterOS.'}</span></div>
         {!readiness ? <p className="subtle">Execute a análise para verificar ownership, conflitos, FastTrack e pré-condições para uma fase futura. Nenhuma configuração RouterOS será alterada.</p> : <>
           <div className="readiness-grid">
             {readiness.checks.map((check) => <div key={check.code} className={`readiness-item ${check.severity.toLowerCase()} ${check.satisfied ? 'satisfied' : 'unsatisfied'}`}>
@@ -84,7 +84,14 @@ export function Settings({
               <div><strong>{check.description}</strong><small>{check.detail}</small></div>
             </div>)}
           </div>
-          <div className="readiness-state"><span>Write flag: <strong>{readiness.writeFlagEnabled ? 'Ativada (sem efeito nesta fase)' : 'Desabilitada'}</strong></span><span>Execução: <strong>Desabilitada</strong></span></div>
+          <div className="readiness-state">
+            <span>Global write flag: <strong>{readiness.writeFlagEnabled ? 'Ativada' : 'Desabilitada'}</strong></span>
+            <span>Device block flag: <strong>{readiness.deviceBlockWriteFlagEnabled ? 'Ativada' : 'Desabilitada'}</strong></span>
+            <span>Credenciais write: <strong>{readiness.writeCredentialsConfigured ? 'Configuradas' : 'Ausentes'}</strong></span>
+            <span>Estratégia: <strong>{readiness.blockingStrategy ?? 'FIREWALL_MAC_RULE'}</strong></span>
+            <span>Ordem analisável: <strong>{readiness.firewallOrderingAnalyzable ? 'Sim' : 'Não'}</strong></span>
+            <span>Execução: <strong>{readiness.executionEnabled ? 'Disponível após confirmação' : 'Desabilitada'}</strong></span>
+          </div>
         </>}
         {summary && <div className="reconciliation-counts" aria-label="Contagens de reconciliação">
           <span>Managed <strong>{summary.managed}</strong></span><span>In sync <strong>{summary.inSync}</strong></span><span>Drifted <strong>{summary.drifted}</strong></span><span>Missing <strong>{summary.missing}</strong></span><span>Conflicts <strong>{summary.conflicts}</strong></span><span>Ambiguous <strong>{summary.ambiguous}</strong></span>

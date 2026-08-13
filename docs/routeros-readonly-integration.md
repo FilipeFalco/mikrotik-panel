@@ -199,7 +199,7 @@ move, desabilita, altera ou remove regra alguma.
 FastTrack pode desviar Simple Queues; o RouterOS documenta que tráfego
 FastTracked ignora queues e outras facilidades L3. O painel informa o risco,
 mas qualquer mudança continua sendo decisão manual do administrador.
-[Packet Flow oficial](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+[Packet Flow oficial](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
 
 ## Erros e disponibilidade
 
@@ -242,7 +242,7 @@ Fora do escopo desta fase:
 - [User — RouterOS Manual](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 - [DHCP — RouterOS Manual](https://manual.mikrotik.com/docs/network-management/dhcp/)
 - [Queues — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/queues/)
-- [Packet Flow in RouterOS — RouterOS Manual](https://manual.mikrotik.com/docs/firewall-and-quality-of-service/packet-flow-in-routeros/)
+- [Packet Flow in RouterOS — RouterOS Manual](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
 
 Physical RouterOS validation: **not performed in this workspace; pending an
 operator-provided reachable router and read-only credentials.**

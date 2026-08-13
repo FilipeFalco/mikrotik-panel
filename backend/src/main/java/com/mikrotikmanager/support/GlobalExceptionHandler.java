@@ -32,7 +32,7 @@ public class GlobalExceptionHandler {
             case TLS_ERROR -> response(HttpStatus.BAD_GATEWAY, ApiErrorCode.MIKROTIK_TLS_ERROR,
                     "Não foi possível validar a conexão TLS com o MikroTik.");
             case WRITE_NOT_IMPLEMENTED -> response(HttpStatus.FORBIDDEN, ApiErrorCode.MIKROTIK_WRITES_DISABLED,
-                    "A escrita RouterOS não é implementada na Fase 3.");
+                    "Esta escrita RouterOS não é implementada na Fase 4; somente bloqueio/liberação de dispositivos está disponível.");
             case UNAVAILABLE -> response(HttpStatus.SERVICE_UNAVAILABLE, ApiErrorCode.MIKROTIK_UNAVAILABLE,
                     "Não foi possível comunicar com o MikroTik.");
         };

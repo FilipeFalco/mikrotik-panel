@@ -5,6 +5,12 @@ export interface SystemStatus {
   connected: boolean;
   mockMode: boolean;
   readOnly: boolean;
+  /**
+   * Capability returned by Phase 4 backends. It is optional so the frontend
+   * remains compatible with older status responses; when present, `false`
+   * always disables real device block/unblock controls.
+   */
+  deviceBlockExecutionEnabled?: boolean;
   host: string;
   port: number;
   routerOsVersion?: string | null;
@@ -24,6 +30,9 @@ export interface Device {
   dhcpServer?: string | null;
   status: DeviceStatus;
   blocked: boolean;
+  /** Optional Phase 4 observation fields; older backends omit them. */
+  blockOwnership?: ResourceOwnership | null;
+  blockSource?: string | null;
   leaseComment?: string | null;
   notes?: string | null;
   downloadLimitBps: number;
@@ -231,7 +240,7 @@ export interface WriteReadinessSummary {
   validManagedPorts: number;
 }
 
-/** Phase 3 readiness diagnostic. executionEnabled is structurally always false. */
+/** Read-only Phase 4 capability and safety diagnostic. */
 export interface WriteReadinessReport {
   generatedAt: string;
   mockMode: boolean;
@@ -239,6 +248,10 @@ export interface WriteReadinessReport {
   readyForFutureExecution: boolean;
   executionEnabled: boolean;
   phaseNotice: string;
+  deviceBlockWriteFlagEnabled?: boolean;
+  writeCredentialsConfigured?: boolean;
+  blockingStrategy?: string;
+  firewallOrderingAnalyzable?: boolean;
   checks: ReadinessCheck[];
   summary: WriteReadinessSummary;
 }

@@ -309,7 +309,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.mockMode").value(false))
                 .andExpect(jsonPath("$.writeFlagEnabled").value(false))
                 .andExpect(jsonPath("$.executionEnabled").value(false))
-                .andExpect(jsonPath("$.phaseNotice").value(containsString("Fase 3")))
+                .andExpect(jsonPath("$.phaseNotice").value(containsString("FIREWALL_MAC_RULE")))
                 .andExpect(jsonPath("$.checks[?(@.code == 'FASTTRACK_BANDWIDTH_WARNING')].severity").value("WARNING"))
                 .andExpect(content().string(not(containsString("api-test-password"))));
 
@@ -320,7 +320,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.operationType").value("BLOCK_DEVICE"))
                 .andExpect(jsonPath("$.target.macAddress").value("AA:BB:CC:DD:EE:01"))
                 .andExpect(jsonPath("$.executable").value(false))
-                .andExpect(jsonPath("$.preconditions[?(@.code == 'BLOCKING_STRATEGY_DECIDED')].satisfied").value(false));
+                .andExpect(jsonPath("$.preconditions[?(@.code == 'BLOCKING_STRATEGY_DECIDED')].satisfied").value(true));
         mockMvc.perform(post("/api/plans/unblock")
                         .contentType(APPLICATION_JSON)
                         .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\"}"))
