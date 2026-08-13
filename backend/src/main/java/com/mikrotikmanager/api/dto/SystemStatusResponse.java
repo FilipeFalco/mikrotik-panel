@@ -9,6 +9,7 @@ public record SystemStatusResponse(
         Long latencyMillis,
         String message,
         boolean readOnly,
-        boolean fastTrackDetected
+        boolean fastTrackDetected,
+        boolean deviceBlockExecutionEnabled
 ) {
 }

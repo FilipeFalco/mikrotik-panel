@@ -4,6 +4,7 @@ import com.mikrotikmanager.domain.BlockDeviceIntent;
 import com.mikrotikmanager.domain.BlockingStrategy;
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
+import com.mikrotikmanager.domain.ManagedDeviceBlockRule;
 import com.mikrotikmanager.domain.OperationIntent;
 import com.mikrotikmanager.domain.OperationPlan;
 import com.mikrotikmanager.domain.PlanChange;
@@ -54,14 +55,14 @@ import java.util.stream.Collectors;
  *
  * <p>This service deliberately knows no RouterOS mutation operation. A plan
  * describes a future intent and its observed preconditions; it is never an
- * authorization grant and is always non-executable in Phase 3.</p>
+ * authorization grant and remains non-executable.</p>
  */
 @Service
 public class OperationPlanningService {
     private static final Logger log = LoggerFactory.getLogger(OperationPlanningService.class);
     private static final long MAX_LIMIT_BPS = 10_000_000_000L;
-    private static final String PHASE_THREE_DISABLED_REASON =
-            "Phase 3 is dry-run only; RouterOS execution is not implemented.";
+    private static final String EXECUTION_REVALIDATION_REASON =
+            "Este plano é somente preview; a execução real sempre reconstrói o estado e revalida ownership antes da escrita.";
 
     private final RouterSnapshotService snapshotService;
     private final ReconciliationService reconciliationService;
@@ -97,6 +98,17 @@ public class OperationPlanningService {
     public OperationPlan plan(OperationIntent intent) {
         Objects.requireNonNull(intent, "intent");
         RouterSnapshot snapshot = snapshotService.capture();
+        return planFromSnapshot(intent, snapshot);
+    }
+
+    /**
+     * Rebuilds a plan from the exact snapshot captured immediately before an
+     * execution attempt. The caller still owns the snapshot and never passes a
+     * browser-supplied plan or fingerprint here.
+     */
+    public OperationPlan planFromSnapshot(OperationIntent intent, RouterSnapshot snapshot) {
+        Objects.requireNonNull(intent, "intent");
+        Objects.requireNonNull(snapshot, "snapshot");
         ReconciliationReport reconciliation = reconciliationService.analyze(snapshot);
         Map<String, ManagedPort> localPorts = managedPortRepository.findAll().stream()
                 .collect(Collectors.toMap(ManagedPort::interfaceName, Function.identity(), (first, ignored) -> first));
@@ -148,40 +160,30 @@ public class OperationPlanningService {
         List<PlanConflict> conflicts = new ArrayList<>();
         boolean currentlyBlocked = device.currentlyBlocked();
         boolean changeRequired = device.hasUsableDevice() && !currentlyBlocked;
-
-        if (currentlyBlocked) {
-            boolean owned = device.blockOwnership() == ResourceOwnership.MANAGED;
-            preconditions.add(new PlanPrecondition("EXISTING_BLOCK_OWNERSHIP_CONFIRMED",
-                    "O bloqueio já observado possui ownership explícito da aplicação.", owned,
-                    owned ? PlanSeverity.INFO : PlanSeverity.WARNING));
-            if (!owned) {
-                warnings.add(new PlanWarning("EXISTING_BLOCK_OWNERSHIP_UNRESOLVED",
-                        "O dispositivo já parece bloqueado, mas a aplicação não pode comprovar que esse bloqueio é dela.",
-                        PlanSeverity.WARNING));
-            }
-        } else {
-            preconditions.add(new PlanPrecondition("BLOCKING_STRATEGY_DECIDED",
-                    "A estratégia oficial de bloqueio ainda não foi decidida para uma futura fase.", false,
-                    PlanSeverity.BLOCKING));
-            warnings.add(new PlanWarning("BLOCKING_STRATEGY_UNDECIDED",
-                    "DHCP block-access e firewall/address-list continuam apenas alternativas analisadas; nenhuma será usada nesta fase.",
-                    PlanSeverity.WARNING));
-        }
+        preconditions.add(new PlanPrecondition("BLOCKING_STRATEGY_DECIDED",
+                "A Fase 4 usa uma regra IPv4 /ip/firewall/filter por MAC, com ownership por comentário exato.", true,
+                PlanSeverity.INFO));
+        addFastTrackBlockWarning(snapshot, preconditions, warnings);
+        addManagedBlockSemantics(device, preconditions, conflicts);
         addBlockResourceAmbiguity(device, preconditions, conflicts);
 
         List<PlanChange> changes;
         if (!device.hasUsableDevice()) {
             changes = List.of(new PlanChange("NO_ACTION", "DEVICE_BLOCK",
                     "O dispositivo não passou pelas validações de planejamento; nenhuma alteração será proposta."));
-        } else if (currentlyBlocked) {
+        } else if (device.hasSingleDesiredManagedRule()) {
             changes = List.of(new PlanChange("NO_CHANGE", "DEVICE_BLOCK",
-                    "O dispositivo já está no estado bloqueado observado; nenhuma alteração RouterOS será enviada."));
+                    "A regra MTMGR de bloqueio já existe com a semântica e a ordem esperadas; nenhuma escrita será enviada."));
+        } else if (currentlyBlocked) {
+            changes = List.of(new PlanChange("NO_ACTION", "DEVICE_BLOCK",
+                    "Há um bloqueio existente que não pode ser adotado ou corrigido automaticamente."));
         } else {
-            changes = List.of(new PlanChange("CANDIDATE", "DEVICE_BLOCK",
-                    "Uma futura fase poderá avaliar um bloqueio após decidir a estratégia e revalidar este snapshot."));
+            changes = List.of(new PlanChange("CREATE_FIREWALL_MAC_RULE", "FIREWALL_MAC_RULE",
+                    "Criar uma regra drop forward por MAC antes da primeira regra forward estática e verificar a ordem depois."));
         }
-        return build(intent, snapshot, device.target(), device.currentState(BlockingStrategy.UNDECIDED),
-                device.desiredBlockState(true), device.blockOwnership(), preconditions, warnings, conflicts, changes, changeRequired);
+        return build(intent, snapshot, device.target(), device.currentState(BlockingStrategy.FIREWALL_MAC_RULE),
+                device.desiredBlockState(true), device.blockOwnership(), preconditions, warnings, conflicts, changes,
+                device.hasUsableDevice() && !currentlyBlocked);
     }
 
     private OperationPlan planUnblock(UnblockDeviceIntent intent, RouterSnapshot snapshot,
@@ -192,26 +194,12 @@ public class OperationPlanningService {
         List<PlanConflict> conflicts = new ArrayList<>();
         boolean currentlyBlocked = device.currentlyBlocked();
         boolean changeRequired = device.hasUsableDevice() && currentlyBlocked;
-
-        if (currentlyBlocked) {
-            boolean owned = device.blockOwnership() == ResourceOwnership.MANAGED;
-            preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
-                    "Uma futura liberação só pode reverter um recurso com ownership exato comprovado.", owned,
-                    PlanSeverity.BLOCKING));
-            preconditions.add(new PlanPrecondition("BLOCKING_STRATEGY_DECIDED",
-                    "A estratégia oficial de bloqueio ainda não foi decidida para uma futura fase.", false,
-                    PlanSeverity.BLOCKING));
-            if (!owned) {
-                BlockResource observed = device.primaryBlockResource();
-                conflicts.add(new PlanConflict("UNOWNED_BLOCK_RESOURCE", observed.resourceType(), observed.displayName(),
-                        observed.target(), observed.ownership(),
-                        "O bloqueio observado não possui o comentário exato de ownership. A aplicação não irá removê-lo.",
-                        PlanSeverity.BLOCKING));
-            }
-            warnings.add(new PlanWarning("BLOCKING_STRATEGY_UNDECIDED",
-                    "Nenhum mecanismo de bloqueio será revertido nesta fase, mesmo quando a propriedade puder ser comprovada.",
-                    PlanSeverity.WARNING));
-        } else if (device.hasUsableDevice()) {
+        preconditions.add(new PlanPrecondition("BLOCKING_STRATEGY_DECIDED",
+                "A Fase 4 usa uma regra IPv4 /ip/firewall/filter por MAC, com ownership por comentário exato.", true,
+                PlanSeverity.INFO));
+        addFastTrackBlockWarning(snapshot, preconditions, warnings);
+        addManagedBlockSemantics(device, preconditions, conflicts);
+        if (!currentlyBlocked && device.hasUsableDevice()) {
             preconditions.add(new PlanPrecondition("NO_OWNED_BLOCK_TO_REMOVE",
                     "O dispositivo já está liberado no estado observado; nenhuma remoção será proposta.", true,
                     PlanSeverity.INFO));
@@ -222,15 +210,19 @@ public class OperationPlanningService {
         if (!device.hasUsableDevice()) {
             changes = List.of(new PlanChange("NO_ACTION", "DEVICE_BLOCK",
                     "O dispositivo não passou pelas validações de planejamento; nenhuma alteração será proposta."));
+        } else if (device.hasSingleDesiredManagedRule()) {
+            changes = List.of(new PlanChange("DELETE_FIREWALL_MAC_RULE", "FIREWALL_MAC_RULE",
+                    "Remover somente a regra MTMGR de bloqueio resolvida no snapshot imediatamente anterior à escrita."));
         } else if (currentlyBlocked) {
-            changes = List.of(new PlanChange("CANDIDATE", "DEVICE_BLOCK",
-                    "Uma futura fase poderá reverter somente um bloqueio explicitamente gerenciado, após revalidação."));
+            changes = List.of(new PlanChange("NO_ACTION", "DEVICE_BLOCK",
+                    "O bloqueio observado não possui uma única regra MTMGR válida para remoção."));
         } else {
             changes = List.of(new PlanChange("NO_CHANGE", "DEVICE_BLOCK",
                     "O dispositivo já está liberado no estado observado; nenhuma alteração RouterOS será enviada."));
         }
-        return build(intent, snapshot, device.target(), device.currentState(BlockingStrategy.UNDECIDED),
-                device.desiredBlockState(false), device.blockOwnership(), preconditions, warnings, conflicts, changes, changeRequired);
+        return build(intent, snapshot, device.target(), device.currentState(BlockingStrategy.FIREWALL_MAC_RULE),
+                device.desiredBlockState(false), device.blockOwnership(), preconditions, warnings, conflicts, changes,
+                changeRequired);
     }
 
     private OperationPlan planPortSpeed(SetPortSpeedIntent intent, RouterSnapshot snapshot,
@@ -313,7 +305,7 @@ public class OperationPlanningService {
                 changeRequired,
                 ready,
                 false,
-                PHASE_THREE_DISABLED_REASON,
+                EXECUTION_REVALIDATION_REASON,
                 Instant.now(clock),
                 snapshot.fingerprint()
         );
@@ -342,8 +334,11 @@ public class OperationPlanningService {
         ResourceOwnership ownership = lease == null ? ResourceOwnership.UNKNOWN
                 : ManagedResourceIdentifier.ownershipForDeviceComment(lease.comment(), normalizedMac);
         List<BlockResource> blockResources = detectBlockResources(lease, device, snapshot, normalizedMac);
+        List<RouterFirewallFilter> managedFirewallRules = snapshot.firewallFilters().stream()
+                .filter(filter -> ManagedDeviceBlockRule.isOwned(filter, normalizedMac))
+                .toList();
         return new DeviceContext(rawMacAddress, normalizedMac, leases, devices, lease, device, interfaceName, localPort,
-                routerInterface, ownership, blockResources);
+                routerInterface, ownership, blockResources, managedFirewallRules);
     }
 
     /**
@@ -362,19 +357,34 @@ public class OperationPlanningService {
                 : device == null ? null : device.ipAddress();
         if (lease != null && lease.blockAccess()) {
             resources.add(new BlockResource("DHCP_LEASE", "Lease DHCP", ipAddress,
-                    blockingOwnership(lease.comment(), normalizedMac)));
+                    ResourceOwnership.FOREIGN));
         }
-        if (device != null && device.blocked() && (lease == null || !lease.blockAccess())) {
+        boolean hasActiveMacRule = snapshot.firewallFilters().stream()
+                .filter(filter -> filter.srcMacAddress() != null)
+                .filter(filter -> normalizedMac.equals(normalizeMac(filter.srcMacAddress())))
+                .anyMatch(RouterFirewallFilter::isActiveForwardBlockingAction);
+        if (device != null && device.blocked() && (lease == null || !lease.blockAccess()) && !hasActiveMacRule) {
             resources.add(new BlockResource("DEVICE_STATE", "Estado de bloqueio do dispositivo", ipAddress,
                     ResourceOwnership.FOREIGN));
         }
+        snapshot.firewallFilters().stream()
+                .filter(filter -> ManagedDeviceBlockRule.isOwned(filter, normalizedMac))
+                .forEach(filter -> resources.add(new BlockResource("FIREWALL_MAC_RULE", "Regra MTMGR do dispositivo",
+                        ipAddress, ResourceOwnership.MANAGED)));
         if (blank(ipAddress)) {
             return List.copyOf(resources);
         }
         snapshot.firewallFilters().stream()
                 .filter(RouterFirewallFilter::isActiveForwardBlockingAction)
                 .filter(filter -> filterTargetsIp(filter, ipAddress, snapshot.addressListEntries()))
+                .filter(filter -> !ManagedDeviceBlockRule.isOwned(filter, normalizedMac))
                 .forEach(filter -> resources.add(new BlockResource("FIREWALL_FILTER", "Regra de firewall", ipAddress,
+                        blockingOwnership(filter.comment(), normalizedMac))));
+        snapshot.firewallFilters().stream()
+                .filter(RouterFirewallFilter::isActiveForwardBlockingAction)
+                .filter(filter -> normalizedMac.equals(normalizeMac(filter.srcMacAddress())))
+                .filter(filter -> !ManagedDeviceBlockRule.isOwned(filter, normalizedMac))
+                .forEach(filter -> resources.add(new BlockResource("FIREWALL_MAC_RULE", "Regra manual por MAC", ipAddress,
                         blockingOwnership(filter.comment(), normalizedMac))));
         return List.copyOf(resources);
     }
@@ -398,11 +408,63 @@ public class OperationPlanningService {
     }
 
     private ResourceOwnership blockingOwnership(String comment, String normalizedMac) {
-        // An active blocking resource without the exact comment is external to
-        // this application. Treating it as foreign is intentionally more
-        // conservative than assuming an unmarked rule may be removed later.
-        return ManagedResourceIdentifier.isOwnedByDevice(comment, normalizedMac)
-                ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
+        return ManagedResourceIdentifier.ownershipForDeviceComment(comment, normalizedMac);
+    }
+
+    private void addManagedBlockSemantics(DeviceContext device, List<PlanPrecondition> preconditions,
+                                          List<PlanConflict> conflicts) {
+        if (!device.hasUsableDevice()) {
+            return;
+        }
+        if (device.managedFirewallRules().size() == 1) {
+            if (device.hasSingleDesiredManagedRule()) {
+                preconditions.add(new PlanPrecondition("MANAGED_BLOCK_RULE_DESIRED",
+                        "A regra MTMGR observada possui chain, action, MAC, disabled e dynamic esperados.", true,
+                        PlanSeverity.INFO));
+                preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
+                        "A única regra de bloqueio possui o comentário de ownership exato do dispositivo.", true,
+                        PlanSeverity.INFO));
+            } else {
+                preconditions.add(new PlanPrecondition("MANAGED_BLOCK_RULE_SEMANTICS",
+                        "A regra MTMGR observada não diverge da forma FIREWALL_MAC_RULE esperada.", false,
+                        PlanSeverity.BLOCKING));
+                RouterFirewallFilter drifted = device.managedFirewallRules().getFirst();
+                conflicts.add(new PlanConflict("MANAGED_BLOCK_RULE_DRIFT", "FIREWALL_MAC_RULE",
+                        drifted.id(), device.ipAddress(), ResourceOwnership.MANAGED,
+                        "A regra MTMGR existe, mas sua semântica divergiu. A aplicação não irá corrigi-la, moverá-la ou removê-la automaticamente.",
+                        PlanSeverity.BLOCKING));
+                preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
+                        "A regra possui comentário MTMGR, mas sua semântica divergente exige análise manual.", false,
+                        PlanSeverity.BLOCKING));
+            }
+            return;
+        }
+        if (device.managedFirewallRules().size() > 1) {
+            preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
+                    "Há mais de uma regra com o mesmo ownership; nenhuma delas será escolhida automaticamente.", false,
+                    PlanSeverity.BLOCKING));
+            return;
+        }
+        if (device.currentlyBlocked()) {
+            preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
+                    "O bloqueio observado não possui ownership exato da regra FIREWALL_MAC_RULE.", false,
+                    PlanSeverity.BLOCKING));
+            BlockResource observed = device.primaryBlockResource();
+            preconditions.add(new PlanPrecondition("NO_FOREIGN_BLOCK_CONFLICT",
+                    "Não existe bloqueio estrangeiro ou não comprovado competindo com a regra MTMGR.", false,
+                    PlanSeverity.BLOCKING));
+            conflicts.add(new PlanConflict("UNOWNED_BLOCK_RESOURCE", observed.resourceType(), observed.displayName(),
+                    observed.target(), observed.ownership(),
+                    "O bloqueio observado não possui ownership exato da regra FIREWALL_MAC_RULE. A aplicação não irá removê-lo nem criar uma segunda regra.",
+                    PlanSeverity.BLOCKING));
+        } else {
+            preconditions.add(new PlanPrecondition("RESOURCE_OWNERSHIP_CONFIRMED",
+                    "Não há recurso de bloqueio existente para adotar; a regra criada receberá ownership MTMGR exato.", true,
+                    PlanSeverity.INFO));
+            preconditions.add(new PlanPrecondition("NO_FOREIGN_BLOCK_CONFLICT",
+                    "Não existe bloqueio estrangeiro ou não comprovado competindo com a regra MTMGR.", true,
+                    PlanSeverity.INFO));
+        }
     }
 
     private void addBlockResourceAmbiguity(DeviceContext device, List<PlanPrecondition> preconditions,
@@ -412,9 +474,10 @@ public class OperationPlanningService {
                 "Há no máximo um recurso RouterOS de bloqueio relacionado ao dispositivo.", unambiguous,
                 PlanSeverity.BLOCKING));
         if (!unambiguous) {
-            conflicts.add(new PlanConflict("MULTIPLE_BLOCK_RESOURCES", "BLOCK_RESOURCE", device.target().displayName(),
+            String code = device.managedFirewallRules().size() > 1 ? "AMBIGUOUS_OWNERSHIP" : "MULTIPLE_BLOCK_RESOURCES";
+            conflicts.add(new PlanConflict(code, "BLOCK_RESOURCE", device.target().displayName(),
                     device.ipAddress(), device.blockOwnership(),
-                    "Há múltiplos recursos de bloqueio observados; uma futura fase não poderá escolher um para remover sem revalidação.",
+                    "Há múltiplos recursos de bloqueio observados; a aplicação não escolherá um deles para remover ou substituir.",
                     PlanSeverity.BLOCKING));
         }
     }
@@ -578,6 +641,21 @@ public class OperationPlanningService {
         }
     }
 
+    private void addFastTrackBlockWarning(RouterSnapshot snapshot, List<PlanPrecondition> preconditions,
+                                          List<PlanWarning> warnings) {
+        boolean fastTrackActive = snapshot.fastTrackDetected();
+        preconditions.add(new PlanPrecondition("FASTTRACK_EXISTING_CONNECTIONS",
+                fastTrackActive
+                        ? "Conexões já FastTracked podem continuar até serem encerradas ou expirarem no RouterOS."
+                        : "Nenhuma regra FastTrack ativa foi detectada neste snapshot.",
+                !fastTrackActive, fastTrackActive ? PlanSeverity.WARNING : PlanSeverity.INFO));
+        if (fastTrackActive) {
+            warnings.add(new PlanWarning("FASTTRACK_EXISTING_CONNECTIONS",
+                    "O dispositivo foi bloqueado para novos fluxos encaminhados. Conexões que já estavam FastTracked podem continuar até serem encerradas ou expirarem no RouterOS.",
+                    PlanSeverity.WARNING));
+        }
+    }
+
     private List<PlanChange> portSpeedChanges(PortContext port, boolean limitValid, boolean changeRequired,
                                               List<PlanConflict> conflicts) {
         if (!limitValid || port.routerInterface() == null) {
@@ -666,11 +744,12 @@ public class OperationPlanningService {
             ManagedPort localPort,
             RouterInterface routerInterface,
             ResourceOwnership ownership,
-            List<BlockResource> blockResources
+            List<BlockResource> blockResources,
+            List<RouterFirewallFilter> managedFirewallRules
     ) {
         private static DeviceContext invalid(String requestedMac) {
             return new DeviceContext(requestedMac, null, List.of(), List.of(), null, null,
-                    null, null, null, ResourceOwnership.UNKNOWN, List.of());
+                    null, null, null, ResourceOwnership.UNKNOWN, List.of(), List.of());
         }
 
         private boolean hasUsableDevice() {
@@ -685,8 +764,18 @@ public class OperationPlanningService {
             if (blockResources.isEmpty()) {
                 return ResourceOwnership.UNKNOWN;
             }
-            return blockResources.stream().allMatch(resource -> resource.ownership() == ResourceOwnership.MANAGED)
-                    ? ResourceOwnership.MANAGED : ResourceOwnership.FOREIGN;
+            if (blockResources.stream().allMatch(resource -> resource.ownership() == ResourceOwnership.MANAGED)) {
+                return ResourceOwnership.MANAGED;
+            }
+            if (blockResources.stream().anyMatch(resource -> resource.ownership() == ResourceOwnership.FOREIGN)) {
+                return ResourceOwnership.FOREIGN;
+            }
+            return ResourceOwnership.UNKNOWN;
+        }
+
+        private boolean hasSingleDesiredManagedRule() {
+            return managedFirewallRules.size() == 1
+                    && ManagedDeviceBlockRule.isExactDesiredRule(managedFirewallRules.getFirst(), normalizedMac);
         }
 
         private BlockResource primaryBlockResource() {
@@ -723,7 +812,7 @@ public class OperationPlanningService {
         private PlanState desiredBlockState(boolean blocked) {
             return new PlanState(displayName(), normalizedMac, ipAddress(), interfaceName,
                     localPort == null ? null : localPort.network(), routerDevice == null ? null : routerDevice.speedLimit(),
-                    blocked, BlockingStrategy.UNDECIDED);
+                    blocked, BlockingStrategy.FIREWALL_MAC_RULE);
         }
 
         private PlanState desiredSpeedState(SpeedLimit requestedLimit) {

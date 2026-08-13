@@ -7,6 +7,7 @@ import com.mikrotikmanager.api.dto.SystemStatusResponse;
 import com.mikrotikmanager.domain.AuditLog;
 import com.mikrotikmanager.domain.DeviceStatus;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
+import com.mikrotikmanager.config.MikrotikProperties;
 import com.mikrotikmanager.service.DeviceView;
 import com.mikrotikmanager.service.PortView;
 
@@ -17,8 +18,19 @@ final class ResponseMapper {
     }
 
     static SystemStatusResponse systemStatus(GatewayConnectionStatus status) {
+        return systemStatus(status, false);
+    }
+
+    static SystemStatusResponse systemStatus(GatewayConnectionStatus status, boolean deviceBlockExecutionEnabled) {
         return new SystemStatusResponse(status.connected(), status.mockMode(), status.host(), status.port(),
-                status.routerOsVersion(), status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected());
+                status.routerOsVersion(), status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected(),
+                deviceBlockExecutionEnabled);
+    }
+
+    static SystemStatusResponse systemStatus(GatewayConnectionStatus status, MikrotikProperties properties) {
+        boolean enabled = status.mockMode() || (status.connected() && properties.writeEnabled()
+                && properties.deviceBlockWritesEnabled() && properties.writeCredentialsConfigured());
+        return systemStatus(status, enabled);
     }
 
     static DeviceResponse device(DeviceView view) {
@@ -32,7 +44,9 @@ final class ResponseMapper {
                 port == null ? device.interfaceName() : port.friendlyName(), device.dhcpServer(),
                 device.blocked() ? DeviceStatus.BLOCKED : device.status(), device.blocked(), device.leaseComment(),
                 metadata == null ? null : metadata.notes(), device.speedLimit().downloadBps(), device.speedLimit().uploadBps(),
-                device.traffic().downloadBps(), device.traffic().uploadBps(), device.lastSeenAt());
+                device.traffic().downloadBps(), device.traffic().uploadBps(), device.lastSeenAt(),
+                view.blockObservation() == null ? null : view.blockObservation().ownership().name(),
+                view.blockObservation() == null ? null : view.blockObservation().source());
     }
 
     static PortResponse port(PortView view) {

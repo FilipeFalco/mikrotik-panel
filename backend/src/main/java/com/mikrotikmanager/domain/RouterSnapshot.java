@@ -61,7 +61,7 @@ public record RouterSnapshot(
                                 value.dynamic())))
                 + collection("firewallFilters", firewallFilters.stream()
                         .map(value -> fields(value.action(), value.chain(), value.comment(), value.disabled(), value.dynamic(),
-                                value.srcAddress(), value.srcAddressList())))
+                                value.srcAddress(), value.srcAddressList(), value.srcMacAddress())))
                 + collection("addressListEntries", addressListEntries.stream()
                         .map(value -> fields(value.listName(), value.address(), value.comment(), value.disabled(), value.dynamic())));
         try {

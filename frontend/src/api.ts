@@ -86,6 +86,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ downloadBps, uploadBps }),
     }),
+  // Execution intentionally has no body. The backend revalidates the fresh
+  // preview itself; the only client-supplied identity is the MAC in the URL.
   blockDevice: (macAddress: string) => request<Device>(`/api/devices/${encoded(macAddress)}/block`, { method: 'POST' }),
   unblockDevice: (macAddress: string) => request<Device>(`/api/devices/${encoded(macAddress)}/block`, { method: 'DELETE' }),
   planBlockDevice: (macAddress: string) => request<OperationPlan>('/api/plans/block', {

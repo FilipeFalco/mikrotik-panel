@@ -9,7 +9,7 @@ import { PortDetail } from './components/PortDetail';
 import type { LocalPortConfiguration } from './components/PortConfigurationEditor';
 import { Settings } from './components/Settings';
 import { StatusBadge } from './components/StatusBadge';
-import { OperationPlanDialog } from './components/OperationPlanDialog';
+import { canConfirmOperationPlan, OperationPlanDialog } from './components/OperationPlanDialog';
 import type { AuditLog, Device, Diagnostics, OperationPlan, Port, ReconciliationReport, SystemStatus, WriteReadinessReport } from './types';
 
 type View = 'dashboard' | 'devices' | 'history' | 'settings' | 'port';
@@ -17,6 +17,7 @@ type View = 'dashboard' | 'devices' | 'history' | 'settings' | 'port';
 interface Confirmation {
   device: Device;
   block: boolean;
+  plan: OperationPlan;
 }
 
 type PlanIntent =
@@ -37,6 +38,10 @@ const ROUTER_DATA_POLL_INTERVAL_MS = 5_000;
 
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof ApiError ? reason.message : fallback;
+}
+
+function comparableMac(value: string | null | undefined): string {
+  return (value ?? '').replace(/[^0-9a-f]/gi, '').toUpperCase();
 }
 
 interface OfflineStateProps {
@@ -173,6 +178,14 @@ export default function App() {
       .finally(() => setPlanning(false));
   }, [requestPlan]);
 
+  const previewDeviceBlock = useCallback((device: Device, block: boolean) => {
+    // Every click starts a new backend preview. The preview is deliberately
+    // the only input used to decide whether the confirmation step is shown.
+    previewPlan(block
+      ? { type: 'BLOCK_DEVICE', macAddress: device.macAddress }
+      : { type: 'UNBLOCK_DEVICE', macAddress: device.macAddress });
+  }, [previewPlan]);
+
   const refreshPlan = useCallback(() => {
     if (!planIntent) return;
     setPlanning(true);
@@ -246,6 +259,14 @@ export default function App() {
 
   // Mock mode keeps simulated controls available. This gates only actions that would target RouterOS.
   const routerControlsReadOnly = Boolean(systemStatus && !systemStatus.mockMode && systemStatus.readOnly);
+  // Phase 4 exposes a specific capability for block/unblock. Falling back to
+  // the pre-capability behavior keeps older status responses working, while an
+  // explicit false always wins. Mock mode is therefore enabled only when the
+  // backend leaves it enabled or reports the capability explicitly.
+  const deviceBlockExecutionEnabled = Boolean(
+    systemStatus?.connected
+      && (systemStatus.deviceBlockExecutionEnabled ?? !routerControlsReadOnly),
+  );
 
   const savePortConfiguration = async (
     interfaceName: string,
@@ -314,14 +335,29 @@ export default function App() {
     }, () => setSelectedDevice(null));
   };
 
+  const requestBlockConfirmation = (plan: OperationPlan) => {
+    if (!deviceBlockExecutionEnabled || !canConfirmOperationPlan(plan, deviceBlockExecutionEnabled)) return;
+    const planMac = plan.target.macAddress ?? plan.target.identifier;
+    const device = (selectedDevice && comparableMac(selectedDevice.macAddress) === comparableMac(planMac))
+      ? selectedDevice
+      : devices.find((candidate) => comparableMac(candidate.macAddress) === comparableMac(planMac));
+    if (!device) {
+      setError('O dispositivo do preview não está mais disponível para confirmação. Gere um novo preview.');
+      return;
+    }
+    setConfirmation({ device, block: plan.operationType === 'BLOCK_DEVICE', plan });
+  };
+
   const confirmBlock = () => {
-    if (!confirmation || routerControlsReadOnly) return;
+    if (!confirmation || !deviceBlockExecutionEnabled) return;
     const { device, block } = confirmation;
     void runOperation(
       () => block ? api.blockDevice(device.macAddress) : api.unblockDevice(device.macAddress),
       () => {
         setConfirmation(null);
         setSelectedDevice(null);
+        setPlanIntent(null);
+        setOperationPlan(null);
       },
     );
   };
@@ -343,7 +379,7 @@ export default function App() {
   const routerConnectionLabel = systemStatus?.mockMode
     ? 'Dados simulados'
     : systemStatus?.connected
-      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? ' · Somente leitura' : ''}`
+      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? deviceBlockExecutionEnabled ? ' · Escrita restrita' : ' · Somente leitura' : ''}`
       : 'RouterOS';
 
   const content = () => {
@@ -362,18 +398,56 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">M</span><div><strong>MikroTik</strong><small>Local Manager</small></div></div>
         <nav aria-label="Navegação principal">{navItems.map((item) => <button key={item.id} type="button" className={view === item.id ? 'nav-item active' : 'nav-item'} aria-current={view === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.symbol}</span>{item.label}</button>)}</nav>
-        <div className="sidebar-foot"><span>Local only</span><small>v0.3 · Fase 3</small></div>
+        <div className="sidebar-foot"><span>Local only</span><small>v0.4 · Fase 4</small></div>
       </aside>
       <main className="main-content">
         <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
         {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
-        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>RouterOS em modo somente leitura.</strong><span>Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.</span></section>}
+        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>{deviceBlockExecutionEnabled ? 'RouterOS com escrita restrita.' : 'RouterOS em modo somente leitura.'}</strong><span>{deviceBlockExecutionEnabled ? 'A aplicação pode criar/remover somente regras MTMGR de bloqueio de dispositivos. Demais operações RouterOS continuam indisponíveis.' : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>
-      <DeviceDetails device={selectedDevice} busy={busy} readOnly={routerControlsReadOnly} onClose={() => setSelectedDevice(null)} onSave={saveDevice} onRequestBlock={(device) => !routerControlsReadOnly && setConfirmation({ device, block: !device.blocked })} onPreviewBlock={(device, block) => previewPlan(block ? { type: 'BLOCK_DEVICE', macAddress: device.macAddress } : { type: 'UNBLOCK_DEVICE', macAddress: device.macAddress })} onPreviewSpeed={(device, downloadBps, uploadBps) => previewPlan({ type: 'SET_DEVICE_SPEED', macAddress: device.macAddress, downloadBps, uploadBps })} />
-      <ConfirmDialog open={Boolean(confirmation)} title={confirmation?.block ? `Bloquear ${confirmation.device.displayName}?` : `Liberar ${confirmation?.device.displayName ?? 'dispositivo'}?`} description={confirmation?.block ? 'O dispositivo perderá acesso à rede. Esta alteração é reversível.' : 'O acesso será liberado novamente para este dispositivo.'} confirmLabel={confirmation?.block ? 'Bloquear' : 'Liberar acesso'} busy={busy} onCancel={() => !busy && setConfirmation(null)} onConfirm={confirmBlock} />
-      <OperationPlanDialog open={Boolean(planIntent)} plan={operationPlan} loading={planning} onClose={() => { setPlanIntent(null); setOperationPlan(null); }} onRefresh={refreshPlan} />
+      <DeviceDetails
+        device={selectedDevice}
+        busy={busy}
+        readOnly={routerControlsReadOnly}
+        blockExecutionEnabled={deviceBlockExecutionEnabled}
+        onClose={() => setSelectedDevice(null)}
+        onSave={saveDevice}
+        onRequestBlock={(device) => previewDeviceBlock(device, !device.blocked)}
+        onPreviewBlock={previewDeviceBlock}
+        onPreviewSpeed={(device, downloadBps, uploadBps) => previewPlan({ type: 'SET_DEVICE_SPEED', macAddress: device.macAddress, downloadBps, uploadBps })}
+      />
+      <OperationPlanDialog
+        open={Boolean(planIntent) && !confirmation}
+        plan={operationPlan}
+        loading={planning}
+        executionEnabled={deviceBlockExecutionEnabled}
+        device={selectedDevice}
+        onConfirm={requestBlockConfirmation}
+        onClose={() => { setPlanIntent(null); setOperationPlan(null); }}
+        onRefresh={refreshPlan}
+      />
+      <ConfirmDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.block ? `Bloquear ${confirmation.device.displayName}?` : `Liberar ${confirmation?.device.displayName ?? 'dispositivo'}?`}
+        description={confirmation?.block
+          ? 'O dispositivo perderá acesso à rede para novos fluxos encaminhados.'
+          : 'A regra MTMGR de bloqueio será removida somente depois de nova leitura e validação de ownership.'}
+        confirmLabel={confirmation?.block ? 'Confirmar bloqueio' : 'Confirmar liberação'}
+        details={confirmation ? [
+          { label: 'Dispositivo', value: confirmation.device.displayName },
+          { label: 'MAC', value: confirmation.device.macAddress },
+          { label: 'Interface/porta', value: `${confirmation.device.interfaceName} · ${confirmation.device.portFriendlyName ?? 'não informada'}` },
+          { label: 'Ownership', value: confirmation.plan.ownership },
+        ] : []}
+        warnings={confirmation?.plan.warnings.map((warning) => `${warning.code}: ${warning.description}`) ?? []}
+        confirmDisabled={!deviceBlockExecutionEnabled}
+        confirmDisabledReason="A capability de execução de bloqueio/liberação foi desabilitada; gere um novo preview quando ela estiver disponível."
+        busy={busy}
+        onCancel={() => !busy && setConfirmation(null)}
+        onConfirm={confirmBlock}
+      />
     </div>
   );
 }

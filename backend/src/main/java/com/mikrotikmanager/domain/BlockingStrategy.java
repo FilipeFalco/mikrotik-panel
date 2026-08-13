@@ -1,10 +1,9 @@
 package com.mikrotikmanager.domain;
 
-/**
- * The concrete RouterOS mechanism for device blocking remains deliberately
- * undecided in Phase 3. Future phases must make an explicit documented choice
- * between candidates rather than treating this value as a command.
- */
+/** The only device blocking mechanism supported by Phase 4. */
 public enum BlockingStrategy {
+    FIREWALL_MAC_RULE,
+    /** Legacy value accepted only when decoding old diagnostic fixtures. */
+    @Deprecated
     UNDECIDED
 }

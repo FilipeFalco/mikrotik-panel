@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WriteReadinessReportTest {
     @Test
-    void preservesThePhaseThreeExecutionBarrierEvenWhenFuturePreflightIsClean() {
+    void preservesThePreviewBoundaryWhileAllowingThePhaseFourCapabilityFlag() {
         WriteReadinessReport report = report(true, false, List.of(check("ROUTEROS_CONNECTED", true, ReadinessSeverity.INFO)));
 
         assertThat(report.readyForFutureExecution()).isTrue();
@@ -21,12 +21,13 @@ class WriteReadinessReportTest {
     }
 
     @Test
-    void rejectsAnyAttemptToMarkPhaseThreeExecutionEnabled() {
-        assertThatIllegalArgumentException().isThrownBy(() -> new WriteReadinessReport(
+    void permitsThePhaseFourExecutionCapabilityToBeReported() {
+        WriteReadinessReport report = new WriteReadinessReport(
                 Instant.now(), false, false, true, true,
                 WriteReadinessReport.PHASE_3_EXECUTION_DISABLED_NOTICE,
-                List.of(check("ROUTEROS_CONNECTED", true, ReadinessSeverity.INFO)), summary()
-        )).withMessageContaining("never enable RouterOS execution");
+                List.of(check("ROUTEROS_CONNECTED", true, ReadinessSeverity.INFO)), summary());
+
+        assertThat(report.executionEnabled()).isTrue();
     }
 
     @Test

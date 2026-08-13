@@ -27,9 +27,12 @@ mikrotik:
   port: ${MIKROTIK_PORT:443}
   username: ${MIKROTIK_USERNAME:}
   password: ${MIKROTIK_PASSWORD:}
+  write-username: ${MIKROTIK_WRITE_USERNAME:}
+  write-password: ${MIKROTIK_WRITE_PASSWORD:}
   verify-ssl: ${MIKROTIK_VERIFY_SSL:true}
   mock-mode: ${MIKROTIK_MOCK_MODE:true}
   write-enabled: ${MIKROTIK_WRITE_ENABLED:false}
+  device-block-writes-enabled: ${MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED:false}
   connect-timeout-ms: ${MIKROTIK_CONNECT_TIMEOUT_MS:3000}
   read-timeout-ms: ${MIKROTIK_READ_TIMEOUT_MS:5000}
 

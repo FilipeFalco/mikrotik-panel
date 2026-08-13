@@ -1,11 +1,14 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.DeviceMetadata;
+import com.mikrotikmanager.domain.DeviceBlockObservation;
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
 import com.mikrotikmanager.gateway.MikrotikGateway;
+import com.mikrotikmanager.gateway.MockMikrotikGateway;
+import com.mikrotikmanager.gateway.routeros.RouterOsRestGateway;
 import com.mikrotikmanager.persistence.ManagedDeviceRepository;
 import com.mikrotikmanager.persistence.ManagedPortRepository;
 import com.mikrotikmanager.support.ApiErrorCode;
@@ -46,8 +49,12 @@ public class DeviceService {
     public List<DeviceView> listDevices() {
         Map<String, ManagedPort> ports = managedPortRepository.findAll().stream()
                 .collect(Collectors.toMap(ManagedPort::interfaceName, Function.identity()));
+        Map<String, DeviceBlockObservation> blockStates = blockStates();
         return gateway.listDevices().stream()
-                .map(device -> toView(device, ports.get(device.interfaceName())))
+                .map(device -> {
+                    DeviceBlockObservation observation = blockStates.get(device.macAddress());
+                    return toView(withEffectiveBlockState(device, observation), ports.get(device.interfaceName()), observation);
+                })
                 .sorted(Comparator.comparing(DeviceView::displayName, String.CASE_INSENSITIVE_ORDER))
                 .toList();
     }
@@ -63,8 +70,9 @@ public class DeviceService {
         RouterDevice routerDevice = gateway.findDevice(normalized)
                 .orElseThrow(() -> new ApiException(ApiErrorCode.DEVICE_NOT_FOUND, HttpStatus.NOT_FOUND,
                         "Dispositivo não encontrado no MikroTik."));
+        DeviceBlockObservation observation = blockStates().get(normalized);
         ManagedPort port = managedPortRepository.findByInterfaceName(routerDevice.interfaceName()).orElse(null);
-        return toView(routerDevice, port);
+        return toView(withEffectiveBlockState(routerDevice, observation), port, observation);
     }
 
     public DeviceView updateMetadata(String macAddress, String friendlyName, String notes) {
@@ -141,8 +149,30 @@ public class DeviceService {
     }
 
     private DeviceView toView(RouterDevice routerDevice, ManagedPort port) {
+        return toView(routerDevice, port, null);
+    }
+
+    private DeviceView toView(RouterDevice routerDevice, ManagedPort port, DeviceBlockObservation observation) {
         DeviceMetadata metadata = managedDeviceRepository.findByMacAddress(routerDevice.macAddress()).orElse(null);
-        return new DeviceView(routerDevice, metadata, port);
+        return new DeviceView(routerDevice, metadata, port, observation);
+    }
+
+    private RouterDevice withEffectiveBlockState(RouterDevice device, DeviceBlockObservation observation) {
+        if (observation == null || !observation.blocked() || device.blocked()) {
+            return device;
+        }
+        return new RouterDevice(device.leaseId(), device.macAddress(), device.hostname(), device.ipAddress(),
+                device.dhcpServer(), device.interfaceName(), com.mikrotikmanager.domain.DeviceStatus.BLOCKED, true,
+                device.leaseComment(), device.speedLimit(), device.traffic(), device.lastSeenAt());
+    }
+
+    private Map<String, DeviceBlockObservation> blockStates() {
+        // Keep arbitrary test/mock gateway implementations read-only and avoid
+        // an extra call unless the concrete gateway can batch firewall state.
+        if (gateway instanceof RouterOsRestGateway || gateway instanceof MockMikrotikGateway) {
+            return gateway.listDeviceBlockStates();
+        }
+        return Map.of();
     }
 
     private void validateAgainstPort(RouterDevice device, SpeedLimit requested) {

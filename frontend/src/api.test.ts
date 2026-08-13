@@ -50,3 +50,18 @@ it('posts only untrusted dry-run intent to local plan endpoints', async () => {
     method: 'POST', body: JSON.stringify({ interfaceName: 'sfp/sfpplus1', downloadBps: 100_000_000, uploadBps: 20_000_000 }),
   }));
 });
+
+it('executes block state with only the MAC in the URL and no plan or RouterOS payload', async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+  vi.stubGlobal('fetch', fetchMock);
+
+  await api.blockDevice('AA:BB:CC:DD:EE:01');
+  await api.unblockDevice('AA:BB:CC:DD:EE:01');
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block', expect.objectContaining({ method: 'POST' }));
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block', expect.objectContaining({ method: 'DELETE' }));
+  for (const [, init] of fetchMock.mock.calls) {
+    expect((init as RequestInit).body).toBeUndefined();
+    expect(JSON.stringify(init)).not.toMatch(/plan|fingerprint|ownership|\.id|routeros/i);
+  }
+});

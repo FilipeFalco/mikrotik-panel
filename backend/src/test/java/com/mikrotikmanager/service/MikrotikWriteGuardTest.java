@@ -1,38 +1,67 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.config.MikrotikProperties;
+import com.mikrotikmanager.support.ApiErrorCode;
 import com.mikrotikmanager.support.ApiException;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MikrotikWriteGuardTest {
     @Test
-    void permitsMockRouterMutationsWhenWriteSwitchIsDisabled() {
-        MikrotikWriteGuard guard = guard(true, false);
+    void globalFlagIsRequiredEvenWhenDeviceBlockFlagIsEnabled() {
+        MikrotikWriteGuard guard = new MikrotikWriteGuard(properties(false, true, "write-user", "write-password"));
 
-        assertThatCode(guard::checkRouterWriteAllowed).doesNotThrowAnyException();
-    }
-
-    @Test
-    void rejectsRealRouterMutationsWhenWriteSwitchIsDisabled() {
-        MikrotikWriteGuard guard = guard(false, false);
-
-        assertThatThrownBy(guard::checkRouterWriteAllowed)
+        assertThatThrownBy(guard::checkDeviceBlockWriteAllowed)
                 .isInstanceOf(ApiException.class)
-                .hasMessageContaining("escrita");
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.MIKROTIK_WRITES_DISABLED);
     }
 
     @Test
-    void permitsRealRouterMutationsOnlyWhenWriteSwitchIsEnabled() {
-        MikrotikWriteGuard guard = guard(false, true);
+    void deviceBlockFlagIsRequiredEvenWhenGlobalFlagIsEnabled() {
+        MikrotikWriteGuard guard = new MikrotikWriteGuard(properties(true, false, "write-user", "write-password"));
 
-        assertThatCode(guard::checkRouterWriteAllowed).doesNotThrowAnyException();
+        assertThatThrownBy(guard::checkDeviceBlockWriteAllowed)
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.DEVICE_BLOCK_WRITES_DISABLED);
     }
 
-    private MikrotikWriteGuard guard(boolean mockMode, boolean writeEnabled) {
-        return new MikrotikWriteGuard(new MikrotikProperties("10.0.0.1", 443, "admin", "secret", true,
-                mockMode, writeEnabled));
+    @Test
+    void readCredentialsNeverSatisfyTheSeparateWriteCredentialRequirement() {
+        MikrotikProperties properties = properties(true, true, null, null);
+        MikrotikWriteGuard guard = new MikrotikWriteGuard(properties);
+
+        assertThat(properties.writeCredentialsConfigured()).isFalse();
+        assertThatThrownBy(guard::checkDeviceBlockWriteAllowed)
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING);
+    }
+
+    @Test
+    void bothFlagsAndSeparateCredentialsPermitTheExecutionServiceToProceed() {
+        MikrotikWriteGuard guard = new MikrotikWriteGuard(properties(true, true, "write-user", "write-password"));
+
+        assertThatCode(guard::checkDeviceBlockWriteAllowed).doesNotThrowAnyException();
+    }
+
+    @Test
+    void mockModeDoesNotRequireWriteCredentials() {
+        MikrotikProperties properties = new MikrotikProperties(
+                "router", 443, "read-user", "read-password", null, null,
+                true, true, false, false, 500, 1_000);
+
+        assertThatCode(() -> new MikrotikWriteGuard(properties).checkDeviceBlockWriteAllowed())
+                .doesNotThrowAnyException();
+    }
+
+    private MikrotikProperties properties(boolean global, boolean deviceBlock,
+                                          String writeUsername, String writePassword) {
+        return new MikrotikProperties("router", 443, "read-user", "read-password",
+                writeUsername, writePassword, true, false, global, deviceBlock, 500, 1_000);
     }
 }

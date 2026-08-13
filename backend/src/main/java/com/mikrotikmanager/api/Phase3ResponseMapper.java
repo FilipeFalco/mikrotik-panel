@@ -70,7 +70,9 @@ final class Phase3ResponseMapper {
                         check.code(), check.description(), check.satisfied(), check.severity().name(), check.detail())).toList(),
                 new ReadinessSummaryResponse(report.summary().managed(), report.summary().foreign(), report.summary().inSync(),
                         report.summary().drifted(), report.summary().missing(), report.summary().conflicts(),
-                        report.summary().ambiguous(), report.summary().managedPorts(), report.summary().validManagedPorts()));
+                        report.summary().ambiguous(), report.summary().managedPorts(), report.summary().validManagedPorts()),
+                report.deviceBlockWriteFlagEnabled(), report.writeCredentialsConfigured(), report.blockingStrategy(),
+                report.firewallOrderingAnalyzable());
     }
 
     private static PlanStateResponse state(PlanState state) {

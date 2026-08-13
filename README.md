@@ -1,12 +1,41 @@
 # MikroTik Local Manager
 
-Painel web local para observar um RouterOS 7 e preparar com segurança futuras
-alterações, sem expor credenciais ao navegador.
+Painel web local para observar um RouterOS 7 e executar, quando explicitamente
+habilitado, somente o bloqueio/liberação de dispositivos da Fase 4. O backend
+mantém as credenciais fora do navegador e usa a estratégia única
+`FIREWALL_MAC_RULE`.
 
-> Estado atual: **Fase 3 — preparação de escrita segura.** Em modo real, o
-> backend usa apenas HTTPS `GET` para RouterOS. Ownership, reconciliation,
-> write readiness e dry-run são observacionais; nenhuma escrita RouterOS foi
-> implementada.
+> Estado atual: **Fase 4 — bloqueio por regra de firewall MAC.** A validação de
+> escrita em RouterOS físico ainda não foi executada.
+
+Physical Phase 4 write validation: NOT RUN
+
+A Fase 5 não foi iniciada.
+
+## Escopo da Fase 4
+
+Para um dispositivo `AA:BB:CC:DD:EE:FF`, a regra gerenciada tem exatamente:
+
+```text
+chain=forward action=drop src-mac-address=AA:BB:CC:DD:EE:FF
+comment="MTMGR:DEVICE:AA-BB-CC-DD-EE-FF" disabled=false dynamic=false
+```
+
+O comentário completo é a única prova de ownership. A criação usa
+`place-before` para ficar antes da primeira regra `forward` estática, e uma
+releitura verifica shape, unicidade e ordem depois da escrita. Regra foreign,
+manual, duplicada ou com drift nunca é adotada, sobrescrita ou removida.
+
+O executor captura um snapshot novo, reconstrói o plano e revalida tudo antes
+de cada mutação; o preview do navegador não é autorização. Resultado de
+transporte desconhecido é confirmado por releitura, sem retry cego. O warning
+`FASTTRACK_EXISTING_CONNECTIONS` informa que conexões já FastTracked podem
+continuar até encerrarem ou expirarem.
+
+Não há mutação de DHCP/leases, Simple Queues/queues, FastTrack, NAT, rotas,
+bridge, IPv6, address-lists, velocidade, interface ou qualquer outro recurso.
+O detalhe operacional está em
+[docs/routeros-device-blocking.md](docs/routeros-device-blocking.md).
 
 ## Requisitos
 
@@ -16,12 +45,12 @@ alterações, sem expor credenciais ao navegador.
 - Maven global não é necessário: use `backend/mvnw`.
 
 ```text
-Browser → Spring Boot local → HTTPS GET /rest → RouterOS
-                       ↘ SQLite local (metadados, papel da porta e auditoria)
+Browser → Spring Boot local → API RouterOS REST
+                       ↘ SQLite local (metadados e auditoria)
 ```
 
-O frontend nunca recebe senha, header `Authorization` ou URL RouterOS. O
-backend, por padrão, escuta em `127.0.0.1:8080`.
+O frontend nunca recebe senha, header `Authorization`, URL RouterOS ou
+snapshot bruto. O backend, por padrão, escuta em `127.0.0.1:8080`.
 
 ## Executar em mock mode
 
@@ -45,45 +74,39 @@ npm ci
 npm run dev
 ```
 
-Abra [http://localhost:3000](http://localhost:3000). Mock mode usa fixtures
-locais e pode simular estado em memória para desenvolvimento; nunca acessa nem
-altera um MikroTik. Os mesmos fluxos de readiness, reconciliation e dry-run
-podem ser analisados sobre esse estado simulado.
+Abra [http://localhost:3000](http://localhost:3000). O mock mantém o fluxo
+local de preview e bloqueio sem alcançar um MikroTik físico.
 
-## Executar com RouterOS real em modo somente leitura
+## Executar com RouterOS real
 
-1. Siga [docs/routeros-setup.md](docs/routeros-setup.md) para configurar
-   `www-ssl`, certificado e usuário dedicado `read,rest-api` sem `write`.
-2. Copie `.env.example` para `.env` e mantenha o arquivo fora do Git.
-3. Configure o perfil seguro:
+Siga primeiro [docs/routeros-setup.md](docs/routeros-setup.md) e o guia
+detalhado de [bloqueio por FIREWALL_MAC_RULE](docs/routeros-device-blocking.md).
+O perfil read-only inicial é:
 
 ```dotenv
 MIKROTIK_HOST=192.168.88.1
 MIKROTIK_PORT=443
-MIKROTIK_USERNAME=mtmgr
-MIKROTIK_PASSWORD=<segredo-local>
+MIKROTIK_USERNAME=mtmgr-read
+MIKROTIK_PASSWORD=<segredo-de-leitura-local>
+MIKROTIK_WRITE_USERNAME=mtmgr-write
+MIKROTIK_WRITE_PASSWORD=<segredo-de-escrita-local>
 MIKROTIK_VERIFY_SSL=true
 MIKROTIK_CONNECT_TIMEOUT_MS=3000
 MIKROTIK_READ_TIMEOUT_MS=5000
 MIKROTIK_MOCK_MODE=false
 MIKROTIK_WRITE_ENABLED=false
+MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED=false
 ```
 
-4. Inicie backend e frontend como acima. Em Configurações, use **Testar
-   conexão**. A UI mostra `RouterOS 7.x · Somente leitura` após sucesso.
+As duas flags de escrita permanecem `false` por padrão. Em equipamento real,
+somente uma janela de manutenção aprovada pode mudar **ambas** para `true`,
+com credenciais de escrita separadas configuradas. Uma flag sozinha ou a
+ausência do par de escrita impede qualquer mutação.
 
-O botão pode chamar uma rota `POST` da nossa API local; a comunicação com
-RouterOS ainda é somente `GET /rest/system/resource`.
-
-`MIKROTIK_VERIFY_SSL=true` valida a cadeia e o hostname/IP do certificado com
-as âncoras de confiança do truststore da JVM que executa o backend. Em uma
-instalação Java padrão, isso normalmente é o `cacerts` do JDK/JRE usado pelo
-processo — não apenas o repositório de certificados do navegador ou do sistema
-operacional. Para um certificado self-signed, faça a CA/certificado ser
-confiável por essa JVM; outra opção de implantação é iniciar a JVM com um
-truststore explicitamente configurado. Use `false` apenas em desenvolvimento
-local controlado: a exceção TLS fica isolada no `RouterOsRestClient` e não
-altera SSL global da JVM nem outros clientes HTTP.
+Em Configurações, **Testar conexão** e **Analisar RouterOS** fazem somente
+leituras. A UI pode receber `POST` local para gerar um plano, mas isso não é um
+`POST` RouterOS. O plano nunca deve ser usado como autorização sem a
+revalidação feita pelo executor.
 
 ## Variáveis de ambiente
 
@@ -91,207 +114,136 @@ altera SSL global da JVM nem outros clientes HTTP.
 | --- | --- | --- |
 | `MIKROTIK_HOST` | `10.0.0.1` | Host ou IP RouterOS, sem URL/credenciais. |
 | `MIKROTIK_PORT` | `443` | Porta do serviço `www-ssl`. |
-| `MIKROTIK_USERNAME` | vazio | Usuário RouterOS dedicado, somente backend. |
-| `MIKROTIK_PASSWORD` | vazio | Segredo local; nunca frontend, SQLite ou log. |
+| `MIKROTIK_USERNAME` | vazio | Usuário RouterOS de leitura, somente backend. |
+| `MIKROTIK_PASSWORD` | vazio | Segredo do usuário de leitura. |
+| `MIKROTIK_WRITE_USERNAME` | vazio | Usuário RouterOS separado para a regra de bloqueio. |
+| `MIKROTIK_WRITE_PASSWORD` | vazio | Segredo do usuário de escrita. |
 | `MIKROTIK_VERIFY_SSL` | `true` | Valida certificado e hostname/IP. |
 | `MIKROTIK_CONNECT_TIMEOUT_MS` | `3000` | Timeout de conexão, positivo. |
 | `MIKROTIK_READ_TIMEOUT_MS` | `5000` | Timeout de resposta, positivo. |
-| `MIKROTIK_MOCK_MODE` | `true` | Usa fixtures locais e nenhuma rede RouterOS. |
-| `MIKROTIK_WRITE_ENABLED` | `false` | Kill switch de escrita RouterOS; a Fase 3 não implementa escrita nem se `true`. |
+| `MIKROTIK_MOCK_MODE` | `true` | Fixtures locais; nenhuma rede RouterOS. |
+| `MIKROTIK_WRITE_ENABLED` | `false` | Primeira trava global de escrita real. |
+| `MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED` | `false` | Segunda trava, específica da Fase 4. |
 | `SERVER_ADDRESS` | `127.0.0.1` | Endereço de escuta do backend. |
 | `SERVER_PORT` | `8080` | Porta do backend. |
 | `APP_FRONTEND_ORIGIN` | `http://localhost:3000` | Única origem CORS permitida. |
 | `APP_DATA_DIR` | `../data` | Diretório SQLite ao iniciar em `backend/`. |
 
-## O que o modo real lê
+`MIKROTIK_PASSWORD` nunca é fallback para
+`MIKROTIK_WRITE_PASSWORD`. O usuário de leitura usa grupo customizado
+`read,rest-api`; o de escrita usa grupo customizado `read,write,rest-api`, sem
+`policy`, `reboot`, `sensitive`, `sniff`, `ftp`, `ssh`, `telnet` ou `winbox`, e
+com `address` limitado ao IP do backend. [RouterOS User oficial da MikroTik](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
 
-| RouterOS REST path | Dados usados |
+## Leituras RouterOS
+
+Uma análise sob demanda captura um snapshot único. Os dados abaixo são lidos
+para correlação, preconditions, detecção de FastTrack e proteção contra
+conflitos; somente `/rest/ip/firewall/filter` recebe a mutação da Fase 4.
+
+| REST path | Uso |
 | --- | --- |
-| `/rest/system/resource` | conexão, versão e latência |
-| `/rest/interface` | interfaces reais |
-| `/rest/ip/dhcp-server` | associação DHCP server → interface |
-| `/rest/ip/dhcp-server/lease` | dispositivos DHCP e status |
-| `/rest/queue/simple` | Simple Queues observadas/limites de porta com ownership exato |
-| `/rest/ip/firewall/filter` | FastTrack e sinal conservador de filtro manual externo no dry-run de liberação |
-| `/rest/ip/firewall/address-list` | leitura do snapshot para estratégia futura e proteção conservadora contra liberação de filtro manual que referencia uma entrada exata |
+| `/rest/system/resource` | conexão, versão e latência aproximada |
+| `/rest/interface` | interfaces e estado observado |
+| `/rest/ip/dhcp-server` | correlação de servidor DHCP |
+| `/rest/ip/dhcp-server/lease` | MAC, IP, status e lease `bound` |
+| `/rest/queue/simple` | inventário observacional, sem alteração |
+| `/rest/ip/firewall/filter` | FastTrack, conflitos e regra MAC gerenciada |
+| `/rest/ip/firewall/address-list` | somente evidência observacional de conflito existente |
 
-**RouterOS HTTP methods used: GET only.** Não há `POST`, `PUT`, `PATCH` ou
-`DELETE` para o RouterOS. Leases são correlacionadas em memória por
-`lease.server → DHCP server.name → DHCP server.interface`, sem uma consulta por
-dispositivo. Um lease sem MAC utilizável ou sem DHCP server correspondente é
-ignorado de forma segura sem quebrar os demais.
+O polling leve lê apenas `system/resource`; diagnóstico e snapshot completo são
+sob demanda. Leases são correlacionadas em memória por
+`lease.server → DHCP server.name → DHCP server.interface`, sem uma request por
+dispositivo.
 
-Veja os detalhes de DTOs, mappers, TLS, códigos de erro, direção de taxas e
-FastTrack em [docs/routeros-readonly-integration.md](docs/routeros-readonly-integration.md).
-As decisões de ownership, snapshot, reconciliation e dry-run estão em
-[docs/routeros-write-readiness.md](docs/routeros-write-readiness.md).
-
-## Preparação para futuras alterações
-
-A análise pesada é sob demanda, em **Configurações → Segurança de escrita**;
-não é executada a cada polling do dashboard. O botão usa `GET
-/api/write-analysis`: uma execução captura um snapshot do RouterOS e deriva
-readiness e reconciliation dessa mesma observação, sem duplicar as seis
-coleções. O status de conexão pode fazer uma leitura extra de
-`/rest/system/resource`:
+## Fluxo de segurança
 
 ```text
-RouterOS GET → Router Snapshot → Ownership / Reconciliation / Readiness
-                                               ↓
-                                         Operation Plan
-                                               ↓
-                                            Dry-run
-                                               X  nenhuma execução
+snapshot novo
+    ↓
+replan + ownership/preconditions
+    ↓
+place-before + PUT/DELETE allowlisted
+    ↓
+snapshot de verificação
+    ↓
+auditoria local e resposta
 ```
 
-Ownership depende do comentário esperado exato (`MTMGR:DEVICE:…` ou
-`MTMGR:PORT:…`). Um prefixo `MTMGR:`, nome, `.id`, MAC, IP ou target parecido
-não basta; recurso manual não é adotado. A reconciliação distingue
-`IN_SYNC`, `DRIFTED`, `MISSING`, `CONFLICT`, ownership ambíguo e
-`NOT_APPLICABLE`. O conflito de recurso foreign é bloqueante; para Simple
-Queues, target igual, subnet, supernet ou qualquer CIDR sobreposto também é
-conflito. Isso não concede ownership: somente o comentário exato prova
-`MANAGED`. WAN e CLIENT desabilitada são não aplicáveis ao readiness; somente
-CLIENT habilitada entra em `managedPorts`, e CIDR ausente/inválido torna
-`MANAGED_PORTS_VALID` bloqueante.
+Bloquear é no-op quando já existe uma única regra gerenciada, correta e bem
+posicionada. Liberar é no-op quando não existe regra gerenciada nem conflito.
+Drift, foreign/manual, duplicidade, `.id` ausente, ordem insegura ou resultado
+desconhecido impedem nova mutação automática. O detalhamento de rollback
+manual, auditoria e checklist físico está em
+[docs/routeros-device-blocking.md](docs/routeros-device-blocking.md).
 
-No dry-run de bloqueio/liberação, somente filtro `chain=forward` com
-`drop`/`reject`, não desabilitado nem dinâmico, e IP exato ou address-list com
-entrada exata é candidato observacional. `chain=input` protege o próprio
-MikroTik e não é contado como bloqueio do cliente.
+## Auditoria e dados locais
 
-Dry-run aceita somente intenção tipada para `BLOCK_DEVICE`, `UNBLOCK_DEVICE`,
-`SET_PORT_SPEED` e `SET_DEVICE_SPEED`. O backend reconstrói o plano usando o
-estado RouterOS e SQLite atual; o browser não decide ownership ou
-preconditions. Todo plano contém o instante/fingerprint do snapshot, é
-efêmero e sempre responde `executable=false` nesta fase. Um no-op é reportado
-como `changeRequired=false`, não executado.
-A geração do plano cria auditoria resumida `OPERATION_PLAN_CREATED`, sem
-credenciais, payload, JSON RouterOS ou dumps; reconciliation continua efêmera
-para não poluir o histórico operacional.
+`BLOCK_DEVICE` e `UNBLOCK_DEVICE` registram no SQLite o tipo `DEVICE`, MAC
+normalizado, estado anterior, estado seguinte, sucesso e código de erro. No-op
+também é auditado. O histórico não contém senha, Authorization, body JSON,
+snapshot bruto ou dump RouterOS.
 
-FastTrack ativo vira aviso forte nos planos de banda porque pode contornar
-Simple Queues. A estratégia de bloqueio continua **UNDECIDED**: a Fase 4
-decidirá entre DHCP `block-access` e firewall/address-list após revisão da
-topologia real e da documentação RouterOS. Nenhuma das duas é implementada
-agora.
+SQLite continua sendo fonte de verdade apenas para metadados locais: nome e
+observações do dispositivo; nome, descrição, CIDR, DHCP server, visibilidade e
+papel local `WAN`/`CLIENT` da porta; e auditoria. Salvar esses metadados não
+altera o RouterOS.
 
-## Segurança e comportamento de escrita
+## Segurança TLS e serviços
 
-Em RouterOS real, a defesa é deliberadamente redundante:
+Use somente `www-ssl`, restrito ao IP do backend e com certificado confiável
+pela JVM do processo. `MIKROTIK_VERIFY_SSL=true` é o padrão; `false` fica
+reservado a desenvolvimento local controlado. A documentação oficial descreve
+REST sob o serviço seguro e alerta para o risco de credenciais em HTTP.
+[REST API oficial da MikroTik](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+e [Services oficial da MikroTik](https://manual.mikrotik.com/docs/system-information-and-utilities/services/).
 
-1. Usuário RouterOS sem policy `write`.
-2. `MIKROTIK_WRITE_ENABLED=false`.
-3. `MikrotikWriteGuard` bloqueia operações RouterOS mutáveis.
-4. `RouterOsRestGateway` não tem implementação de mutação na Fase 3.
+## Testes de software
 
-Assim, botões de bloquear/liberar/alterar velocidade em modo real devolvem erro
-seguro antes de qualquer request mutável. Mesmo com
-`MIKROTIK_WRITE_ENABLED=true`, não criam queue, não alteram lease e não mudam
-firewall.
-
-Os planos de simulação também não acionam mutação indireta: não há executor,
-auto-reparo, adoção de recurso ou confirmação de execução. SQLite permanece
-editável somente para metadados locais.
-
-SQLite continua sendo fonte de verdade apenas para estado local: nome amigável
-e observações do dispositivo; nome, descrição, CIDR, DHCP server e visibilidade
-da porta; papel `WAN` ou `CLIENT`; e auditoria. `PUT /api/devices/{mac}` e
-`PUT /api/ports/{interface}` continuam permitidos para esses metadados locais
-em read-only.
-
-## Configuração local de portas e WAN
-
-Interfaces vêm do RouterOS por `GET /rest/interface`. Uma interface descoberta
-que ainda não exista no SQLite aparece em **Configurações → Interfaces
-descobertas** como não gerenciada. Nessa tela o operador pode salvar nome
-amigável, descrição, CIDR, DHCP server, visibilidade no dashboard e o papel
-local `WAN` ou `CLIENT`.
-
-```text
-RouterOS descobre interface
-          ↓
-operador configura metadados locais
-          ↓
-SQLite local
-          ↓
-dashboard
-```
-
-Esse fluxo usa somente `PUT /api/ports/{interface}` na API local. Ele não muda
-interface, rota, NAT, DHCP client, firewall ou qualquer outra configuração do
-RouterOS. A porta física não é renomeada no equipamento. Em modo real
-read-only, esses campos locais continuam editáveis.
-
-O dashboard identifica a Internet pelo papel local `WAN`, não pelo nome físico
-da interface. Portanto, a WAN pode ser `ether5` ou outra interface apresentada
-pelo fluxo de portas atual; `ether1` é WAN apenas no fixture de mock atual, não
-uma regra do produto.
-
-## Diagnóstico e erros
-
-O polling leve de status lê apenas `system/resource`. Diagnósticos separados
-verificam REST API, Interfaces, DHCP, Queues e FastTrack; FastTrack não é
-consultado a cada cinco segundos. Reconciliation, readiness, plans e a leitura
-de address lists são igualmente sob demanda. Lista de queues vazia é sucesso,
-não erro.
-
-| Situação | Resultado seguro |
-| --- | --- |
-| 401/403 | falha de autenticação/permissão de leitura |
-| rede, DNS, timeout ou 5xx | MikroTik desconectado; SQLite e histórico continuam disponíveis |
-| TLS | mensagem de validação TLS sem detalhe sensível |
-| JSON inesperado | erro controlado, sem body/stack trace RouterOS |
-
-As mensagens e logs não incluem senha ou `Authorization`.
-
-## Limitações da Fase 3
-
-- Sem tráfego instantâneo via `monitor`/POST; contadores acumulados não são
-  apresentados como Mbps.
-- Sem bloqueio real, `make-static`, alteração de `block-access` ou rate-limit
-  de DHCP.
-- Sem criação, edição, remoção ou reordenação de Simple Queues.
-- Sem alteração de firewall/FastTrack, bridge, IP, DHCP, NAT, rota, VLAN, DNS
-  ou interface.
-- Sem criação, alteração, remoção ou adoção de address lists, filtros, queues,
-  Queue Tree ou PCQ.
-- Sem executor de plano, confirmação de escrita, auto-reparo ou sincronização
-  automática de SQLite/RouterOS.
-- Sem multi-router, acesso remoto, billing, WebSocket ou SSE.
-
-FastTrack pode contornar Simple Queues e é apenas detectado/avisado. Queues
-manuais não são adotadas; somente comentário exatamente
-`MTMGR:PORT:<interface>` prova ownership local.
-
-## Testes e build
-
-Backend:
+Os comandos abaixo são testes locais do projeto, não validação física:
 
 ```bash
 cd backend
 ./mvnw test
 ./mvnw package
-```
 
-Frontend:
-
-```bash
-cd frontend
+cd ../frontend
 npm ci
 npm test
 npm run build
 ```
 
-Os testes incluem fake RouterOS, autenticação/indisponibilidade/resposta inválida,
-correlação DHCP, direção de queue, FastTrack, bloqueio de métodos mutáveis e
-verificação arquitetural de GET-only.
+Este pedido altera somente documentação; não há alteração de código ou de
+testes nesta entrega.
 
-## Documentação RouterOS
+## Documentação relacionada
 
-- [Preparação manual e usuário read-only](docs/routeros-setup.md)
-- [Arquitetura e decisões da integração de leitura](docs/routeros-readonly-integration.md)
-- [Write readiness, ownership e dry-run](docs/routeros-write-readiness.md)
-- [REST API oficial da MikroTik](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+- [Preparação manual de `www-ssl`, usuários e flags](docs/routeros-setup.md)
+- [Arquitetura da Fase 4](docs/architecture.md)
+- [Write readiness da Fase 4](docs/routeros-write-readiness.md)
+- [Bloqueio, ordem, idempotência, rollback e checklist físico](docs/routeros-device-blocking.md)
 
-Physical RouterOS validation: **not performed in this workspace.**
+## Limites declarados
+
+- somente `FIREWALL_MAC_RULE` em `/ip/firewall/filter`;
+- nenhuma alteração de DHCP/leases, queue/Simple Queue, FastTrack, NAT, rota,
+  bridge, IPv6, address-list, interface ou velocidade;
+- nenhuma adoção ou correção automática de recurso foreign/manual/drifted;
+- nenhum retry cego após resultado desconhecido;
+- nenhum teste de escrita em RouterOS físico foi executado;
+- Fase 5 não foi iniciada.
+
+Physical Phase 4 write validation: NOT RUN
+
+## Fontes oficiais da MikroTik
+
+- [REST API](https://manual.mikrotik.com/docs/developer-guides/rest-api/)
+- [Firewall Filter](https://manual.mikrotik.com/docs/cli-reference/ip/firewall/filter/)
+- [Packet Flow — FastTrack](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
+- [User e policies](https://manual.mikrotik.com/docs/authentication-authorization-accounting/user/)
+- [Services](https://manual.mikrotik.com/docs/system-information-and-utilities/services/)
+## Correções finais da Fase 4
+
+O painel pode, quando explicitamente habilitado, criar e remover somente regras MTMGR de bloqueio por MAC em `/ip/firewall/filter`. A regra é validada por ownership exato e semântica exata; matchers extras são drift e nunca são corrigidos automaticamente. Múltiplas regras MTMGR válidas podem coexistir em qualquer ordem no prefixo seguro da chain `forward`.
+
+O modo real exige `MIKROTIK_WRITE_ENABLED=true`, `MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED=true` e `MIKROTIK_WRITE_USERNAME`/`MIKROTIK_WRITE_PASSWORD` separados das credenciais de leitura. A interface informa **Escrita restrita** nesse caso: speed, DHCP, queues, FastTrack, NAT, routes e bridges permanecem sem escrita.

@@ -48,7 +48,7 @@ it('shows readiness, reconciliation statuses and foreign conflict without an aut
 
   expect(screen.getByRole('heading', { name: 'Preparação para futuras alterações' })).toBeInTheDocument();
   expect(screen.getByText('Write flag:')).toBeInTheDocument();
-  expect(screen.getAllByText('Desabilitada')).toHaveLength(2);
+  expect(screen.getAllByText('Desabilitada')).toHaveLength(3);
   expect(screen.getByText('CONFLICT')).toBeInTheDocument();
   expect(screen.getByText('FOREIGN_QUEUE_CONFLICT')).toBeInTheDocument();
   expect(screen.getByText('Configuração RouterOS manual conflitante detectada.')).toBeInTheDocument();

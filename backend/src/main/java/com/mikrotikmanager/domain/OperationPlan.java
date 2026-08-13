@@ -9,7 +9,7 @@ import java.util.UUID;
  * Ephemeral snapshot of a requested future RouterOS operation.
  *
  * <p>It is diagnostic evidence only. {@code executable} is structurally
- * required to stay {@code false} in Phase 3; a plan id is never an
+ * required to stay {@code false} for Phase 4 previews; a plan id is never an
  * authorization token and a future executor must rebuild this assessment.
  * </p>
  */
@@ -46,7 +46,7 @@ public record OperationPlan(
         Objects.requireNonNull(generatedAt, "generatedAt");
         Objects.requireNonNull(snapshotFingerprint, "snapshotFingerprint");
         if (executable) {
-            throw new IllegalArgumentException("Phase 3 operation plans must never be executable.");
+            throw new IllegalArgumentException("Phase 4 operation plans must never be executable; they remain preview-only.");
         }
     }
 

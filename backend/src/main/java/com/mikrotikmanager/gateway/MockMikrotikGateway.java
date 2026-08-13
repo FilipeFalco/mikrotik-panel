@@ -1,6 +1,7 @@
 package com.mikrotikmanager.gateway;
 
 import com.mikrotikmanager.domain.DeviceStatus;
+import com.mikrotikmanager.domain.DeviceBlockObservation;
 import com.mikrotikmanager.domain.GatewayDiagnosticCheck;
 import com.mikrotikmanager.domain.GatewayDiagnostics;
 import com.mikrotikmanager.domain.GatewayConnectionStatus;
@@ -12,6 +13,7 @@ import com.mikrotikmanager.domain.RouterFirewallFilter;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.RouterSimpleQueue;
 import com.mikrotikmanager.domain.RouterSnapshot;
+import com.mikrotikmanager.domain.ResourceOwnership;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.domain.TrafficRate;
 
@@ -32,6 +34,7 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
     private final Map<String, MockDeviceState> devices = new LinkedHashMap<>();
     private final Map<String, SpeedLimit> portSpeeds = new LinkedHashMap<>();
     private final Map<String, String> portNetworks = new LinkedHashMap<>();
+    private final Map<String, RouterFirewallFilter> managedBlockRules = new LinkedHashMap<>();
 
     public MockMikrotikGateway(String host, int port) {
         this.host = host;
@@ -74,6 +77,17 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
     }
 
     @Override
+    public synchronized Map<String, DeviceBlockObservation> listDeviceBlockStates() {
+        Map<String, DeviceBlockObservation> observations = new LinkedHashMap<>();
+        managedBlockRules.forEach((mac, ignored) -> observations.put(mac,
+                new DeviceBlockObservation(true, ResourceOwnership.MANAGED, "FIREWALL_MAC_RULE")));
+        devices.values().stream().filter(device -> device.blocked && !managedBlockRules.containsKey(device.macAddress))
+                .forEach(device -> observations.putIfAbsent(device.macAddress,
+                        new DeviceBlockObservation(true, ResourceOwnership.FOREIGN, "DEVICE_STATE")));
+        return Map.copyOf(observations);
+    }
+
+    @Override
     public synchronized Optional<RouterDevice> findDevice(String macAddress) {
         return Optional.ofNullable(devices.get(normalize(macAddress))).map(MockDeviceState::toDevice);
     }
@@ -95,7 +109,7 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
         List<RouterDhcpLease> leases = devices.values().stream()
                 .map(device -> new RouterDhcpLease(device.leaseId, device.macAddress, device.ipAddress, device.dhcpServer,
                         device.interfaceName, device.status == DeviceStatus.ONLINE || device.blocked ? "bound" : "waiting",
-                        device.blocked, device.leaseComment, true, false))
+                        false, device.leaseComment, true, false))
                 .toList();
         List<RouterSimpleQueue> queues = portSpeeds.entrySet().stream()
                 .map(entry -> new RouterSimpleQueue("mock-queue-" + entry.getKey(),
@@ -103,8 +117,11 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
                         ManagedResourceIdentifier.expectedPortComment(entry.getKey()), portNetworks.get(entry.getKey()),
                         entry.getValue(), false, false))
                 .toList();
+        List<RouterFirewallFilter> filters = new ArrayList<>();
+        filters.addAll(managedBlockRules.values());
+        filters.add(new RouterFirewallFilter("mock-fasttrack", "fasttrack-connection", "forward", "mock fixture", false, false));
         return new RouterSnapshot(Instant.now(), List.copyOf(interfaces.values()), servers, leases, listDevices(), queues,
-                List.of(new RouterFirewallFilter("mock-fasttrack", "fasttrack-connection", "forward", "mock fixture", false, false)),
+                filters,
                 List.<RouterAddressListEntry>of());
     }
 
@@ -127,6 +144,10 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
             device.status = DeviceStatus.BLOCKED;
             device.blocked = true;
         }
+        managedBlockRules.putIfAbsent(device.macAddress, new RouterFirewallFilter(
+                "mock-block-" + device.macAddress.replace(':', '-'), "drop", "forward",
+                ManagedResourceIdentifier.expectedDeviceComment(device.macAddress), false, false,
+                null, null, device.macAddress));
     }
 
     @Override
@@ -136,6 +157,7 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
             device.blocked = false;
             device.status = device.statusBeforeBlock == DeviceStatus.BLOCKED ? DeviceStatus.UNKNOWN : device.statusBeforeBlock;
         }
+        managedBlockRules.remove(device.macAddress);
     }
 
     private void addFixtures() {

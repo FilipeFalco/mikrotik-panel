@@ -7,14 +7,26 @@ interface DeviceDetailsProps {
   device: Device | null;
   busy: boolean;
   readOnly?: boolean;
+  /** Capability for the real block/unblock action. Preview stays available when false. */
+  blockExecutionEnabled?: boolean;
   onClose: () => void;
   onSave: (device: Device, friendlyName: string, notes: string, downloadBps: number, uploadBps: number) => void;
-  onRequestBlock: (device: Device) => void;
+  onRequestBlock?: (device: Device) => void;
   onPreviewBlock?: (device: Device, block: boolean) => void;
   onPreviewSpeed?: (device: Device, downloadBps: number, uploadBps: number) => void;
 }
 
-export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave, onRequestBlock, onPreviewBlock, onPreviewSpeed }: DeviceDetailsProps) {
+export function DeviceDetails({
+  device,
+  busy,
+  readOnly = false,
+  blockExecutionEnabled,
+  onClose,
+  onSave,
+  onRequestBlock,
+  onPreviewBlock,
+  onPreviewSpeed,
+}: DeviceDetailsProps) {
   const [friendlyName, setFriendlyName] = useState('');
   const [notes, setNotes] = useState('');
   const [download, setDownload] = useState('');
@@ -31,6 +43,22 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
   }, [device]);
 
   if (!device) return null;
+
+  // Older callers only know about the general read-only flag. New callers can
+  // enable block/unblock independently (including an explicitly enabled mock
+  // capability), while a disabled capability never removes the preview.
+  const canExecuteBlock = blockExecutionEnabled ?? !readOnly;
+
+  const requestBlockPreview = () => {
+    const block = !device.blocked;
+    // The preview callback is preferred for the Phase 4 flow. Keep the older
+    // request callback as a fallback for callers that have not adopted it.
+    if (onPreviewBlock) {
+      onPreviewBlock(device, block);
+      return;
+    }
+    onRequestBlock?.(device);
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -72,6 +100,7 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
           <div><span>Hostname</span><strong>{device.hostname ?? 'Não informado'}</strong></div>
           <div><span>IP</span><strong>{device.ipAddress ?? 'Indisponível'}</strong></div>
           <div><span>MAC</span><strong>{device.macAddress}</strong></div>
+          {device.blockOwnership && <div><span>Ownership do bloqueio</span><strong>{device.blockOwnership}</strong></div>}
           <div><span>Status</span><StatusBadge status={device.blocked ? 'BLOCKED' : device.status} /></div>
           <div><span>Download atual</span><strong>{formatRate(device.downloadTrafficBps)}</strong></div>
           <div><span>Upload atual</span><strong>{formatRate(device.uploadTrafficBps)}</strong></div>
@@ -80,7 +109,7 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
           <div className="form-section-heading"><p className="eyebrow">Metadata local</p><small>Estes campos são salvos apenas no painel local.</small></div>
           <label>Nome amigável<input value={friendlyName} onChange={(event) => setFriendlyName(event.target.value)} placeholder={device.hostname ?? device.macAddress} /></label>
           <label>Observações<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} /></label>
-          <div className="form-section-heading"><p className="eyebrow">Controles RouterOS</p><small>{readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : 'Limites e bloqueio são aplicados pelo RouterOS.'}</small></div>
+          <div className="form-section-heading"><p className="eyebrow">Controles RouterOS</p><small>{readOnly && !canExecuteBlock ? 'Limites e bloqueio real estão desabilitados nesta conexão; a visualização do plano continua disponível.' : readOnly ? 'Limites permanecem somente leitura; bloqueio/liberação está disponível conforme a capability do backend.' : 'Limites e bloqueio são aplicados pelo RouterOS.'}</small></div>
           <div className="two-columns">
             <label>Limite download<div className="input-with-unit"><input inputMode="decimal" value={download} onChange={(event) => { setDownload(event.target.value); setErrors((current) => ({ ...current, download: undefined })); }} aria-label="Limite de download em Mbps" aria-invalid={Boolean(errors.download)} aria-describedby={errors.download ? 'device-download-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.download && <small id="device-download-error" className="field-error" role="alert">{errors.download}</small>}</label>
             <label>Limite upload<div className="input-with-unit"><input inputMode="decimal" value={upload} onChange={(event) => { setUpload(event.target.value); setErrors((current) => ({ ...current, upload: undefined })); }} aria-label="Limite de upload em Mbps" aria-invalid={Boolean(errors.upload)} aria-describedby={errors.upload ? 'device-upload-error' : undefined} disabled={readOnly} /><span>Mbps</span></div>{errors.upload && <small id="device-upload-error" className="field-error" role="alert">{errors.upload}</small>}</label>
@@ -88,8 +117,14 @@ export function DeviceDetails({ device, busy, readOnly = false, onClose, onSave,
           {onPreviewSpeed && <button type="button" className="button secondary compact plan-preview-button" onClick={previewSpeed} disabled={busy}>Visualizar plano de limite</button>}
           <div className="dialog-actions split-actions">
             <div className="router-action-group">
-              <span title={readOnly ? 'Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.' : undefined}>
-                <button type="button" className={device.blocked ? 'button secondary' : 'button danger'} onClick={() => onRequestBlock(device)} disabled={busy || readOnly}>
+              <span title={!canExecuteBlock ? 'Bloqueio/liberação indisponível nesta conexão; a visualização do plano continua disponível.' : undefined}>
+                <button
+                  type="button"
+                  className={device.blocked ? 'button secondary' : 'button danger'}
+                  onClick={requestBlockPreview}
+                  disabled={busy || !canExecuteBlock}
+                  title={!canExecuteBlock ? 'Bloqueio/liberação indisponível nesta conexão; a visualização do plano continua disponível.' : undefined}
+                >
                   {device.blocked ? 'Liberar acesso' : 'Bloquear dispositivo'}
                 </button>
               </span>

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import App from './App';
-import type { Device, Port, SystemStatus } from './types';
+import type { Device, OperationPlan, Port, SystemStatus } from './types';
 
 const disconnectedStatus: SystemStatus = {
   connected: false,
@@ -71,6 +71,25 @@ const bridgeDevice: Device = {
   interfaceName: 'bridge',
   portFriendlyName: 'bridge',
   dhcpServer: 'defconf',
+};
+
+const blockPlan: OperationPlan = {
+  planId: 'app-block-plan',
+  operationType: 'BLOCK_DEVICE',
+  target: { identifier: ports[0].devices[0].macAddress, displayName: ports[0].devices[0].displayName, macAddress: ports[0].devices[0].macAddress, interfaceName: ports[0].devices[0].interfaceName },
+  currentState: { displayName: ports[0].devices[0].displayName, macAddress: ports[0].devices[0].macAddress, ipAddress: ports[0].devices[0].ipAddress, interfaceName: ports[0].devices[0].interfaceName, blocked: false },
+  desiredState: { displayName: ports[0].devices[0].displayName, macAddress: ports[0].devices[0].macAddress, ipAddress: ports[0].devices[0].ipAddress, interfaceName: ports[0].devices[0].interfaceName, blocked: true },
+  ownership: 'MANAGED',
+  preconditions: [{ code: 'DEVICE_EXISTS', description: 'O dispositivo existe.', satisfied: true, severity: 'INFO' }],
+  warnings: [],
+  conflicts: [],
+  plannedChanges: [{ action: 'BLOCK', resourceType: 'DEVICE_BLOCK', description: 'Bloquear após revalidação.' }],
+  changeRequired: true,
+  readyForFutureExecution: true,
+  executable: false,
+  executionDisabledReason: '',
+  generatedAt: '2026-08-09T12:00:00Z',
+  snapshotFingerprint: 'app-block-fingerprint',
 };
 
 function jsonResponse(body: unknown): Response {
@@ -265,4 +284,100 @@ it('uses a single combined write-analysis endpoint for Analisar RouterOS and upd
 
   // The execution-disabled notice stays visible.
   expect(screen.getByText('A execução RouterOS permanece desabilitada na Fase 3.')).toBeInTheDocument();
+});
+
+it('disables real block execution when the capability is false while keeping a fresh preview available', async () => {
+  const disabledStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: false };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path === '/api/system/status') return jsonResponse(disabledStatus);
+    if (path === '/api/ports') return jsonResponse(ports);
+    if (path === '/api/devices') return jsonResponse([ports[0].devices[0]]);
+    if (path === '/api/plans/block' && init?.method === 'POST') return jsonResponse(blockPlan);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  await screen.findByRole('heading', { name: 'Dashboard' });
+  fireEvent.click(screen.getByRole('button', { name: 'Dispositivos' }));
+  await screen.findByText('Galaxy S25');
+  fireEvent.click(screen.getByRole('button', { name: 'Detalhes' }));
+  expect(screen.getByRole('button', { name: 'Bloquear dispositivo' })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano' }));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/plans/block')).toHaveLength(1));
+  expect(screen.getByRole('button', { name: 'Confirmar bloqueio' })).toBeDisabled();
+});
+
+it('previews block before mutation, requires explicit confirmation, sends no plan payload and refreshes router data and audit', async () => {
+  let currentDevice = ports[0].devices[0];
+  let currentPorts = ports;
+  const executionStatus: SystemStatus = {
+    ...connectedReadOnlyStatus,
+    deviceBlockExecutionEnabled: true,
+  };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path === '/api/system/status') return jsonResponse(executionStatus);
+    if (path === '/api/ports') return jsonResponse(currentPorts);
+    if (path === '/api/devices') return jsonResponse([currentDevice]);
+    if (path === '/api/plans/block' && init?.method === 'POST') return jsonResponse(blockPlan);
+    if (path === `/api/devices/${encodeURIComponent(currentDevice.macAddress)}/block` && init?.method === 'POST') {
+      currentDevice = { ...currentDevice, blocked: true, status: 'BLOCKED' };
+      currentPorts = [{ ...currentPorts[0], blockedDeviceCount: 1, devices: [currentDevice] }];
+      return jsonResponse(currentDevice);
+    }
+    if (path === '/api/audit') return jsonResponse([]);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  await screen.findByRole('heading', { name: 'Dashboard' });
+  fireEvent.click(screen.getByRole('button', { name: 'Dispositivos' }));
+  await screen.findByText('Galaxy S25');
+  fireEvent.click(screen.getByRole('button', { name: 'Detalhes' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Bloquear dispositivo' }));
+
+  await screen.findByRole('button', { name: 'Confirmar bloqueio' });
+  expect(fetchMock.mock.calls.filter(([input, requestInit]) => String(input).includes('/api/devices/') && (requestInit as RequestInit | undefined)?.method === 'POST')).toHaveLength(0);
+
+  // The first confirmation button belongs to the preview. It only opens the
+  // explicit confirmation dialog; the mutating endpoint is still untouched.
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar bloqueio' }));
+  expect(screen.getByRole('heading', { name: 'Bloquear Galaxy S25?' })).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/devices/'))).toHaveLength(0);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar bloqueio' }));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input, requestInit]) =>
+    String(input) === '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block' && (requestInit as RequestInit | undefined)?.method === 'POST',
+  )).toHaveLength(1));
+
+  const blockCall = fetchMock.mock.calls.find(([input, requestInit]) =>
+    String(input) === '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block' && (requestInit as RequestInit | undefined)?.method === 'POST',
+  );
+  expect((blockCall?.[1] as RequestInit).body).toBeUndefined();
+  expect(JSON.stringify(blockCall?.[1])).not.toMatch(/plan|fingerprint|ownership|\.id|routeros/i);
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/audit')).toHaveLength(1));
+  expect(screen.queryByRole('dialog', { name: 'Galaxy S25' })).not.toBeInTheDocument();
+});
+
+it('shows restricted write rather than a global read-only label when device block is enabled', async () => {
+  const restrictedStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: true };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(restrictedStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText('RouterOS 7.16.2 · Escrita restrita')).toBeInTheDocument();
+  expect(screen.getByText('RouterOS com escrita restrita.')).toBeInTheDocument();
+  expect(screen.queryByText('RouterOS em modo somente leitura.')).not.toBeInTheDocument();
 });

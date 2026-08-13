@@ -21,6 +21,8 @@ public record DeviceResponse(
         long uploadLimitBps,
         long downloadTrafficBps,
         long uploadTrafficBps,
-        Instant lastSeenAt
+        Instant lastSeenAt,
+        String blockOwnership,
+        String blockSource
 ) {
 }

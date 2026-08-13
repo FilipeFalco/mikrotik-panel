@@ -92,3 +92,43 @@ it('offers a dry-run preview beside disabled real RouterOS controls', () => {
   expect(onPreviewSpeed).toHaveBeenCalledWith(device, 100_000_000, 20_000_000);
   expect(screen.getByRole('button', { name: 'Bloquear dispositivo' })).toBeDisabled();
 });
+
+it('starts a fresh block preview when the real block control is clicked', () => {
+  const onPreviewBlock = vi.fn();
+  render(
+    <DeviceDetails
+      device={device}
+      busy={false}
+      readOnly
+      blockExecutionEnabled
+      onClose={vi.fn()}
+      onSave={vi.fn()}
+      onRequestBlock={vi.fn()}
+      onPreviewBlock={onPreviewBlock}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Bloquear dispositivo' }));
+  expect(onPreviewBlock).toHaveBeenCalledWith(device, true);
+});
+
+it('keeps block preview available when the backend disables real execution', () => {
+  const onPreviewBlock = vi.fn();
+  render(
+    <DeviceDetails
+      device={device}
+      busy={false}
+      readOnly
+      blockExecutionEnabled={false}
+      onClose={vi.fn()}
+      onSave={vi.fn()}
+      onRequestBlock={vi.fn()}
+      onPreviewBlock={onPreviewBlock}
+    />,
+  );
+
+  expect(screen.getByRole('button', { name: 'Bloquear dispositivo' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Visualizar plano' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano' }));
+  expect(onPreviewBlock).toHaveBeenCalledWith(device, true);
+});
