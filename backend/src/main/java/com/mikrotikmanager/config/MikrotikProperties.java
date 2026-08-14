@@ -15,6 +15,7 @@ public record MikrotikProperties(
         boolean mockMode,
         boolean writeEnabled,
         boolean deviceBlockWritesEnabled,
+        boolean bandwidthWritesEnabled,
         int connectTimeoutMs,
         int readTimeoutMs
 ) {
@@ -34,7 +35,7 @@ public record MikrotikProperties(
             boolean mockMode,
             boolean writeEnabled
     ) {
-        this(host, port, username, password, null, null, verifySsl, mockMode, writeEnabled, false,
+        this(host, port, username, password, null, null, verifySsl, mockMode, writeEnabled, false, false,
                 DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS);
     }
 
@@ -54,8 +55,16 @@ public record MikrotikProperties(
             int connectTimeoutMs,
             int readTimeoutMs
     ) {
-        this(host, port, username, password, null, null, verifySsl, mockMode, writeEnabled, false,
+        this(host, port, username, password, null, null, verifySsl, mockMode, writeEnabled, false, false,
                 connectTimeoutMs, readTimeoutMs);
+    }
+
+    /** Phase 4 constructor retained for callers that already pass block flag. */
+    public MikrotikProperties(String host, int port, String username, String password, String writeUsername, String writePassword,
+                              boolean verifySsl, boolean mockMode, boolean writeEnabled, boolean deviceBlockWritesEnabled,
+                              int connectTimeoutMs, int readTimeoutMs) {
+        this(host, port, username, password, writeUsername, writePassword, verifySsl, mockMode, writeEnabled,
+                deviceBlockWritesEnabled, false, connectTimeoutMs, readTimeoutMs);
     }
 
     @ConstructorBinding
@@ -80,6 +89,7 @@ public record MikrotikProperties(
                 + ", mockMode=" + mockMode
                 + ", writeEnabled=" + writeEnabled
                 + ", deviceBlockWritesEnabled=" + deviceBlockWritesEnabled
+                + ", bandwidthWritesEnabled=" + bandwidthWritesEnabled
                 + ", connectTimeoutMs=" + connectTimeoutMs
                 + ", readTimeoutMs=" + readTimeoutMs
                 + "]";

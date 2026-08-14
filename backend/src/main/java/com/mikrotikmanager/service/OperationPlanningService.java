@@ -491,7 +491,7 @@ public class OperationPlanningService {
                 .orElse(null);
         ManagedPort localPort = interfaceName == null ? null : localPorts.get(interfaceName);
         ReconciliationResource resource = interfaceName == null ? null : reconciliation.resources().stream()
-                .filter(candidate -> "SIMPLE_QUEUE".equals(candidate.resourceType()))
+                .filter(candidate -> "PORT_QUEUE".equals(candidate.resourceType()) || "SIMPLE_QUEUE".equals(candidate.resourceType()))
                 .filter(candidate -> interfaceName.equals(candidate.resourceKey()))
                 .findFirst()
                 .orElse(null);
@@ -634,10 +634,10 @@ public class OperationPlanningService {
                 fastTrackActive
                         ? "FastTrack ativo foi detectado e exige revisão antes de uma futura operação de banda."
                         : "Nenhuma regra FastTrack ativa foi detectada neste snapshot.",
-                !fastTrackActive, fastTrackActive ? PlanSeverity.WARNING : PlanSeverity.INFO));
+                !fastTrackActive, fastTrackActive ? PlanSeverity.BLOCKING : PlanSeverity.INFO));
         if (fastTrackActive) {
-            warnings.add(new PlanWarning("FASTTRACK_ACTIVE",
-                    "FastTrack ativo pode impedir que futuras Simple Queues tratem parte do tráfego.", PlanSeverity.WARNING));
+            warnings.add(new PlanWarning("FASTTRACK_BYPASSES_SIMPLE_QUEUE",
+                    "FastTrack ativo impede a aplicação segura deste limite por Simple Queue nesta fase.", PlanSeverity.BLOCKING));
         }
     }
 
@@ -671,11 +671,11 @@ public class OperationPlanningService {
                     "Há conflito de ownership; a aplicação não irá adotar, substituir ou alterar a fila observada."));
         }
         if (port.reconciliationResource() != null && port.reconciliationResource().status() == ReconciliationStatus.MISSING) {
-            return List.of(new PlanChange("CREATE_CANDIDATE", "SIMPLE_QUEUE",
-                    "Uma futura fase poderá considerar criar a fila da porta após revalidar ownership e preconditions."));
+            return List.of(new PlanChange("CREATE_PORT_QUEUE", "PORT_QUEUE",
+                    "Criar a fila MTMGR da porta e, se necessário, reparentar filhos MTMGR após a criação."));
         }
-        return List.of(new PlanChange("UPDATE_CANDIDATE", "SIMPLE_QUEUE",
-                "Uma futura fase poderá considerar atualizar somente uma fila com ownership explícito, após revalidação."));
+        return List.of(new PlanChange("UPDATE_PORT_QUEUE", "PORT_QUEUE",
+                "Atualizar somente a fila MTMGR exata após fresh snapshot e revalidação."));
     }
 
     private List<PlanChange> deviceSpeedChanges(DeviceContext device, boolean limitValid, boolean changeRequired,
@@ -692,8 +692,8 @@ public class OperationPlanningService {
             return List.of(new PlanChange("NO_ACTION", "DEVICE_SPEED",
                     "Há conflito de ownership; a aplicação não irá adotar ou sobrescrever o recurso observado."));
         }
-        return List.of(new PlanChange("UPDATE_CANDIDATE", "DEVICE_SPEED",
-                "Uma futura fase poderá considerar um limite de dispositivo após revalidar ownership e preconditions."));
+        return List.of(new PlanChange("UPDATE_DEVICE_QUEUE", "DEVICE_QUEUE",
+                "Atualizar somente a fila MTMGR exata após fresh snapshot e revalidação."));
     }
 
     private boolean validLimit(SpeedLimit requested) {

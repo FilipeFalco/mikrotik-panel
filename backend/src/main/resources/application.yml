@@ -33,6 +33,7 @@ mikrotik:
   mock-mode: ${MIKROTIK_MOCK_MODE:true}
   write-enabled: ${MIKROTIK_WRITE_ENABLED:false}
   device-block-writes-enabled: ${MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED:false}
+  bandwidth-writes-enabled: ${MIKROTIK_BANDWIDTH_WRITES_ENABLED:false}
   connect-timeout-ms: ${MIKROTIK_CONNECT_TIMEOUT_MS:3000}
   read-timeout-ms: ${MIKROTIK_READ_TIMEOUT_MS:5000}
 

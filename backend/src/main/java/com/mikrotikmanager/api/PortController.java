@@ -6,6 +6,7 @@ import com.mikrotikmanager.api.dto.SpeedLimitRequest;
 import com.mikrotikmanager.api.dto.UpdatePortRequest;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.service.PortService;
+import com.mikrotikmanager.service.BandwidthExecutionService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,9 +21,11 @@ import java.util.List;
 @RequestMapping("/api/ports")
 public class PortController {
     private final PortService portService;
+    private final BandwidthExecutionService bandwidthExecutionService;
 
-    public PortController(PortService portService) {
+    public PortController(PortService portService, BandwidthExecutionService bandwidthExecutionService) {
         this.portService = portService;
+        this.bandwidthExecutionService = bandwidthExecutionService;
     }
 
     @GetMapping
@@ -43,7 +46,7 @@ public class PortController {
 
     @PutMapping("/{interfaceName}/speed")
     public PortResponse setSpeed(@PathVariable String interfaceName, @Valid @RequestBody SpeedLimitRequest request) {
-        return ResponseMapper.port(portService.setSpeed(interfaceName,
+        return ResponseMapper.port(bandwidthExecutionService.setPortSpeed(interfaceName,
                 new SpeedLimit(request.downloadBps(), request.uploadBps())));
     }
 

@@ -68,6 +68,21 @@ public final class RouterOsSimpleQueueMapper {
         return Map.copyOf(portSpeeds);
     }
 
+    /** Resolves DEVICE queues from one collection response; never performs an N+1 lookup. */
+    public static Map<String, SpeedLimit> toOwnedDeviceSpeeds(List<RouterOsSimpleQueueDto> queues) {
+        if (queues == null) return Map.of();
+        Map<String, SpeedLimit> result = new LinkedHashMap<>(); Set<String> ambiguous = new HashSet<>();
+        for (RouterOsSimpleQueueDto queue : queues) {
+            if (queue == null || isDisabledOrUntrustworthy(queue.disabled()) || isDisabledOrUntrustworthy(queue.dynamic())) continue;
+            String mac = exactOwnedDevice(queue.comment());
+            if (mac == null) continue;
+            Optional<SpeedLimit> limit = RouterOsRateParser.parseSimpleQueueMaxLimit(queue.maxLimit());
+            if (limit.isEmpty() || ambiguous.contains(mac)) continue;
+            if (result.putIfAbsent(mac, limit.get()) != null) { result.remove(mac); ambiguous.add(mac); }
+        }
+        return Map.copyOf(result);
+    }
+
     private static boolean isDisabledOrUntrustworthy(String rawDisabled) {
         try {
             return RouterOsValueParser.booleanOrDefault(rawDisabled, false, "queue/simple.disabled");
@@ -88,5 +103,12 @@ public final class RouterOsSimpleQueueMapper {
         }
         String interfaceName = comment.substring(PORT_COMMENT_PREFIX.length());
         return ManagedResourceIdentifier.isOwnedByPort(comment, interfaceName) ? interfaceName : null;
+    }
+
+    private static String exactOwnedDevice(String comment) {
+        if (comment == null || !comment.startsWith("MTMGR:DEVICE:")) return null;
+        String suffix = comment.substring("MTMGR:DEVICE:".length());
+        String mac = suffix.replace('-', ':');
+        return ManagedResourceIdentifier.isOwnedByDevice(comment, mac) ? ManagedResourceIdentifier.normalizeMac(mac) : null;
     }
 }

@@ -1,18 +1,31 @@
 # MikroTik Local Manager
 
 Painel web local para observar um RouterOS 7 e executar, quando explicitamente
-habilitado, somente o bloqueio/liberação de dispositivos da Fase 4. O backend
+habilitado, o bloqueio/liberação de dispositivos e limites de banda MTMGR da Fase 5. O backend
 mantém as credenciais fora do navegador e usa a estratégia única
-`FIREWALL_MAC_RULE`.
+`FIREWALL_MAC_RULE` e `SIMPLE_QUEUE`.
 
-> Estado atual: **Fase 4 — bloqueio por regra de firewall MAC.** A validação de
+> Estado atual: **Fase 5 — bloqueio por MAC e Simple Queues gerenciadas.** A validação de
 > escrita em RouterOS físico ainda não foi executada.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+Physical Phase 5 bandwidth validation: NOT RUN
 
-## Escopo da Fase 4
+## Capabilities
+
+| Capability | Estado |
+| --- | --- |
+| Read RouterOS | YES |
+| Local metadata | YES |
+| Block/Unblock | YES — flag própria |
+| Port bandwidth | YES — flag própria |
+| Device bandwidth | YES — flag própria |
+| FastTrack modification | NO |
+| DHCP mutation | NO |
+| Queue Tree | NO |
+
+## Escopo de escrita
 
 Para um dispositivo `AA:BB:CC:DD:EE:FF`, a regra gerenciada tem exatamente:
 
@@ -32,10 +45,14 @@ transporte desconhecido é confirmado por releitura, sem retry cego. O warning
 `FASTTRACK_EXISTING_CONNECTIONS` informa que conexões já FastTracked podem
 continuar até encerrarem ou expirarem.
 
-Não há mutação de DHCP/leases, Simple Queues/queues, FastTrack, NAT, rotas,
-bridge, IPv6, address-lists, velocidade, interface ou qualquer outro recurso.
+Para banda, a porta usa `target=<network>`, `parent=none` e ownership
+`MTMGR:PORT:<interface>`. O dispositivo usa `target=<ip>/32`, ownership
+`MTMGR:DEVICE:<MAC>` e torna-se filho da fila da porta quando ela possui limite.
+`SpeedLimit(download, upload)` é codificado como RouterOS `max-limit=upload/download`.
+FastTrack ativo bloqueia somente a execução de banda; não é modificado.
 O detalhe operacional está em
 [docs/routeros-device-blocking.md](docs/routeros-device-blocking.md).
+O contrato completo da Fase 5 está em [docs/routeros-bandwidth-control.md](docs/routeros-bandwidth-control.md).
 
 ## Requisitos
 
@@ -96,6 +113,7 @@ MIKROTIK_READ_TIMEOUT_MS=5000
 MIKROTIK_MOCK_MODE=false
 MIKROTIK_WRITE_ENABLED=false
 MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED=false
+MIKROTIK_BANDWIDTH_WRITES_ENABLED=false
 ```
 
 As duas flags de escrita permanecem `false` por padrão. Em equipamento real,
@@ -123,7 +141,8 @@ revalidação feita pelo executor.
 | `MIKROTIK_READ_TIMEOUT_MS` | `5000` | Timeout de resposta, positivo. |
 | `MIKROTIK_MOCK_MODE` | `true` | Fixtures locais; nenhuma rede RouterOS. |
 | `MIKROTIK_WRITE_ENABLED` | `false` | Primeira trava global de escrita real. |
-| `MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED` | `false` | Segunda trava, específica da Fase 4. |
+| `MIKROTIK_DEVICE_BLOCK_WRITES_ENABLED` | `false` | Segunda trava, específica de block/unblock. |
+| `MIKROTIK_BANDWIDTH_WRITES_ENABLED` | `false` | Segunda trava, específica de Simple Queue. |
 | `SERVER_ADDRESS` | `127.0.0.1` | Endereço de escuta do backend. |
 | `SERVER_PORT` | `8080` | Porta do backend. |
 | `APP_FRONTEND_ORIGIN` | `http://localhost:3000` | Única origem CORS permitida. |
@@ -139,7 +158,7 @@ com `address` limitado ao IP do backend. [RouterOS User oficial da MikroTik](htt
 
 Uma análise sob demanda captura um snapshot único. Os dados abaixo são lidos
 para correlação, preconditions, detecção de FastTrack e proteção contra
-conflitos; somente `/rest/ip/firewall/filter` recebe a mutação da Fase 4.
+conflitos. O cliente de leitura continua GET-only.
 
 | REST path | Uso |
 | --- | --- |
@@ -163,7 +182,7 @@ snapshot novo
     ↓
 replan + ownership/preconditions
     ↓
-place-before + PUT/DELETE allowlisted
+PUT/PATCH/DELETE estritamente allowlisted
     ↓
 snapshot de verificação
     ↓
@@ -179,7 +198,7 @@ manual, auditoria e checklist físico está em
 
 ## Auditoria e dados locais
 
-`BLOCK_DEVICE` e `UNBLOCK_DEVICE` registram no SQLite o tipo `DEVICE`, MAC
+`BLOCK_DEVICE`, `UNBLOCK_DEVICE`, `PORT_SPEED_CHANGED` e `DEVICE_SPEED_CHANGED` registram no SQLite o tipo e alvo
 normalizado, estado anterior, estado seguinte, sucesso e código de erro. No-op
 também é auditado. O histórico não contém senha, Authorization, body JSON,
 snapshot bruto ou dump RouterOS.
@@ -213,8 +232,7 @@ npm test
 npm run build
 ```
 
-Este pedido altera somente documentação; não há alteração de código ou de
-testes nesta entrega.
+As verificações de software são locais; não executam escrita em hardware físico.
 
 ## Documentação relacionada
 
@@ -222,18 +240,20 @@ testes nesta entrega.
 - [Arquitetura da Fase 4](docs/architecture.md)
 - [Write readiness da Fase 4](docs/routeros-write-readiness.md)
 - [Bloqueio, ordem, idempotência, rollback e checklist físico](docs/routeros-device-blocking.md)
+- [Simple Queue, hierarquia, FastTrack e checklist físico da Fase 5](docs/routeros-bandwidth-control.md)
 
 ## Limites declarados
 
-- somente `FIREWALL_MAC_RULE` em `/ip/firewall/filter`;
-- nenhuma alteração de DHCP/leases, queue/Simple Queue, FastTrack, NAT, rota,
+- `FIREWALL_MAC_RULE` em `/ip/firewall/filter` e `SIMPLE_QUEUE` em `/queue/simple`;
+- nenhuma alteração de DHCP/leases, Queue Tree, FastTrack, mangle, NAT, rota,
   bridge, IPv6, address-list, interface ou velocidade;
 - nenhuma adoção ou correção automática de recurso foreign/manual/drifted;
 - nenhum retry cego após resultado desconhecido;
 - nenhum teste de escrita em RouterOS físico foi executado;
-- Fase 5 não foi iniciada.
+- nenhum teste de escrita em RouterOS físico foi executado para Fase 5.
 
 Physical Phase 4 write validation: NOT RUN
+Physical Phase 5 bandwidth validation: NOT RUN
 
 ## Fontes oficiais da MikroTik
 

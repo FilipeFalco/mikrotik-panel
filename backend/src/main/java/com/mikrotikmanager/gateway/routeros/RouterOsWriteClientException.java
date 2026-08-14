@@ -24,6 +24,7 @@ public final class RouterOsWriteClientException extends RuntimeException {
         return switch (errorType) {
             case CREDENTIALS_MISSING -> "RouterOS write credentials are not configured.";
             case DEVICE_BLOCK_WRITES_DISABLED -> "Device block writes are disabled.";
+            case BANDWIDTH_WRITES_DISABLED -> "Bandwidth writes are disabled.";
             case GLOBAL_WRITES_DISABLED -> "RouterOS writes are disabled.";
             case PERMISSION_DENIED -> "RouterOS rejected the write permission.";
             case NOT_FOUND -> "RouterOS resource was not found.";

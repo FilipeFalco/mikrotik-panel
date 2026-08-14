@@ -11,6 +11,8 @@ export interface SystemStatus {
    * always disables real device block/unblock controls.
    */
   deviceBlockExecutionEnabled?: boolean;
+  /** Independent Phase 5 Simple Queue write capability. */
+  bandwidthExecutionEnabled?: boolean;
   host: string;
   port: number;
   routerOsVersion?: string | null;

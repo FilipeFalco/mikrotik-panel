@@ -45,6 +45,11 @@ public final class ManagedResourceIdentifier {
         return "mtmgr-port-" + safeName;
     }
 
+    /** Deterministic name only; the exact comment remains the ownership proof. */
+    public static String expectedDeviceQueueName(String macAddress) {
+        return "mtmgr-device-" + normalizeMac(macAddress).replace(":", "");
+    }
+
     /**
      * Compatibility alias for {@link #expectedDeviceComment(String)}.
      */

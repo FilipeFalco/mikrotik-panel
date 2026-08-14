@@ -23,7 +23,9 @@ public record WriteReadinessReport(
         boolean deviceBlockWriteFlagEnabled,
         boolean writeCredentialsConfigured,
         String blockingStrategy,
-        boolean firewallOrderingAnalyzable
+        boolean firewallOrderingAnalyzable,
+        boolean bandwidthWriteFlagEnabled,
+        boolean bandwidthExecutionEnabled
 ) {
     public static final String PHASE_3_EXECUTION_DISABLED_NOTICE =
             "A infraestrutura pode estar preparada para futura habilitação de escrita. "
@@ -38,7 +40,7 @@ public record WriteReadinessReport(
                                 boolean readyForFutureExecution, boolean executionEnabled, String phaseNotice,
                                 List<ReadinessCheck> checks, ReadinessSummary summary) {
         this(generatedAt, mockMode, writeFlagEnabled, readyForFutureExecution, executionEnabled, phaseNotice,
-                checks, summary, false, false, "UNDECIDED", false);
+                checks, summary, false, false, "UNDECIDED", false, false, false);
     }
 
     public WriteReadinessReport {

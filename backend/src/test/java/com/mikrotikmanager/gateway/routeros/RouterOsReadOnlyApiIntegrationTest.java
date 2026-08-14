@@ -297,7 +297,7 @@ class RouterOsReadOnlyApiIntegrationTest {
 
         mockMvc.perform(get("/api/reconciliation"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.resources[0].resourceType").value("SIMPLE_QUEUE"))
+                .andExpect(jsonPath("$.resources[0].resourceType").value("PORT_QUEUE"))
                 .andExpect(jsonPath("$.resources[0].ownership").value("MANAGED"))
                 .andExpect(jsonPath("$.resources[0].status").value("IN_SYNC"))
                 .andExpect(jsonPath("$.resources[0].conflict").value(false))
@@ -335,7 +335,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.operationType").value("SET_PORT_SPEED"))
                 .andExpect(jsonPath("$.changeRequired").value(false))
                 .andExpect(jsonPath("$.executable").value(false))
-                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_ACTIVE')].severity").value("WARNING"));
+                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_BYPASSES_SIMPLE_QUEUE')].severity").value("BLOCKING"));
         mockMvc.perform(post("/api/plans/device-speed")
                         .contentType(APPLICATION_JSON)
                         .content("{\"macAddress\":\"AA:BB:CC:DD:EE:01\",\"downloadBps\":10000000,\"uploadBps\":2000000}"))
@@ -343,7 +343,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.operationType").value("SET_DEVICE_SPEED"))
                 .andExpect(jsonPath("$.target.interfaceName").value("ether2"))
                 .andExpect(jsonPath("$.executable").value(false))
-                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_ACTIVE')].severity").value("WARNING"))
+                .andExpect(jsonPath("$.warnings[?(@.code == 'FASTTRACK_BYPASSES_SIMPLE_QUEUE')].severity").value("BLOCKING"))
                 .andExpect(content().string(not(containsString("api-test-password"))));
 
         assertThat(ROUTER.requests()).isNotEmpty().allSatisfy(request ->
@@ -364,7 +364,7 @@ class RouterOsReadOnlyApiIntegrationTest {
                 .andExpect(jsonPath("$.readiness.executionEnabled").value(false))
                 .andExpect(jsonPath("$.readiness.summary.managedPorts").value(1))
                 .andExpect(jsonPath("$.readiness.summary.validManagedPorts").value(1))
-                .andExpect(jsonPath("$.reconciliation.resources[0].resourceType").value("SIMPLE_QUEUE"))
+                .andExpect(jsonPath("$.reconciliation.resources[0].resourceType").value("PORT_QUEUE"))
                 .andExpect(jsonPath("$.reconciliation.snapshotFingerprint").isString())
                 .andExpect(content().string(not(containsString("api-test-password"))));
 

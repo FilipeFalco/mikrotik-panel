@@ -16,7 +16,9 @@ public record WriteReadinessResponse(
         boolean deviceBlockWriteFlagEnabled,
         boolean writeCredentialsConfigured,
         String blockingStrategy,
-        boolean firewallOrderingAnalyzable
+        boolean firewallOrderingAnalyzable,
+        boolean bandwidthWriteFlagEnabled,
+        boolean bandwidthExecutionEnabled
 ) {
     public WriteReadinessResponse {
         checks = List.copyOf(checks);

@@ -12,6 +12,24 @@ public record RouterSimpleQueue(
         String target,
         SpeedLimit maxLimit,
         boolean disabled,
-        boolean dynamic
+        boolean dynamic,
+        boolean invalid,
+        String parent,
+        String limitAt,
+        String priority,
+        String queue,
+        String burstLimit,
+        String burstThreshold,
+        String burstTime,
+        String bucketSize,
+        String time,
+        String packetMarks,
+        String dstAddress
 ) {
+    /** Source compatible constructor for Phase 1-4 fixtures. */
+    public RouterSimpleQueue(String id, String name, String comment, String target, SpeedLimit maxLimit,
+                             boolean disabled, boolean dynamic) {
+        this(id, name, comment, target, maxLimit, disabled, dynamic, false, "none", null, null, null,
+                null, null, null, null, null, null, null);
+    }
 }

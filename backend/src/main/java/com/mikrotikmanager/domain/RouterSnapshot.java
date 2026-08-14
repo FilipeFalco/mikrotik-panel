@@ -57,8 +57,10 @@ public record RouterSnapshot(
                         .map(value -> fields(value.macAddress(), value.ipAddress(), value.interfaceName(), value.status(),
                                 value.blocked(), value.leaseComment(), value.speedLimit())))
                 + collection("simpleQueues", simpleQueues.stream()
-                        .map(value -> fields(value.name(), value.comment(), value.target(), value.maxLimit(), value.disabled(),
-                                value.dynamic())))
+                        .map(value -> fields(value.id(), value.name(), value.comment(), value.target(), value.maxLimit(), value.disabled(),
+                                value.dynamic(), value.invalid(), value.parent(), value.limitAt(), value.priority(), value.queue(),
+                                value.burstLimit(), value.burstThreshold(), value.burstTime(), value.bucketSize(), value.time(),
+                                value.packetMarks(), value.dstAddress())))
                 + collection("firewallFilters", firewallFilters.stream()
                         .map(value -> fields(value.action(), value.chain(), value.comment(), value.disabled(), value.dynamic(),
                                 value.srcAddress(), value.srcAddressList(), value.srcMacAddress())))
@@ -73,7 +75,8 @@ public record RouterSnapshot(
     }
 
     private static String collection(String name, java.util.stream.Stream<String> values) {
-        return name + "[" + values.sorted().collect(Collectors.joining(",")) + "]";
+        // Queue list order is semantic; other collections are harmlessly stabilized as before.
+        return name + "[" + values.collect(Collectors.joining(",")) + "]";
     }
 
     /** Length-prefix values so a comment or name cannot blur field boundaries. */

@@ -24,13 +24,16 @@ final class ResponseMapper {
     static SystemStatusResponse systemStatus(GatewayConnectionStatus status, boolean deviceBlockExecutionEnabled) {
         return new SystemStatusResponse(status.connected(), status.mockMode(), status.host(), status.port(),
                 status.routerOsVersion(), status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected(),
-                deviceBlockExecutionEnabled);
+                deviceBlockExecutionEnabled, false);
     }
 
     static SystemStatusResponse systemStatus(GatewayConnectionStatus status, MikrotikProperties properties) {
         boolean enabled = status.mockMode() || (status.connected() && properties.writeEnabled()
                 && properties.deviceBlockWritesEnabled() && properties.writeCredentialsConfigured());
-        return systemStatus(status, enabled);
+        boolean bandwidth = status.mockMode() || (status.connected() && properties.writeEnabled()
+                && properties.bandwidthWritesEnabled() && properties.writeCredentialsConfigured());
+        return new SystemStatusResponse(status.connected(), status.mockMode(), status.host(), status.port(), status.routerOsVersion(),
+                status.latencyMillis(), status.message(), status.readOnly(), status.fastTrackDetected(), enabled, bandwidth);
     }
 
     static DeviceResponse device(DeviceView view) {

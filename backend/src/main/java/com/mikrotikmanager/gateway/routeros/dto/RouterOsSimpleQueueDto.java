@@ -17,6 +17,23 @@ public record RouterOsSimpleQueueDto(
         @JsonProperty("max-limit") String maxLimit,
         String disabled,
         String dynamic,
-        String target
+        String invalid,
+        String target,
+        String parent,
+        @JsonProperty("limit-at") String limitAt,
+        String priority,
+        String queue,
+        @JsonProperty("burst-limit") String burstLimit,
+        @JsonProperty("burst-threshold") String burstThreshold,
+        @JsonProperty("burst-time") String burstTime,
+        @JsonProperty("bucket-size") String bucketSize,
+        String time,
+        @JsonProperty("packet-marks") String packetMarks,
+        @JsonProperty("dst-address") String dstAddress
 ) {
+    public RouterOsSimpleQueueDto(String id, String name, String comment, String maxLimit, String disabled,
+                                  String dynamic, String target) {
+        this(id, name, comment, maxLimit, disabled, dynamic, null, target, null, null, null, null,
+                null, null, null, null, null, null, null);
+    }
 }

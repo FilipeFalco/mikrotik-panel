@@ -10,7 +10,7 @@ ownership, conflito, shape e ordem antes da mutação.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 possui readiness de banda separada: Simple Queue legível, ownership/conflitos e FastTrack fazem parte do preflight.
 
 ## Estratégia única
 
@@ -27,7 +27,7 @@ dynamic=false
 ```
 
 O readiness confirma que essa estratégia é analisável e que a ordem poderá ser
-comprovada. Não prepara ou oferece DHCP `block-access`, Simple Queue,
+comprovada. Não prepara ou oferece DHCP `block-access`, Queue Tree,
 address-list, FastTrack, NAT, rota, bridge, IPv6 ou velocidade como alternativa.
 
 ## O que a análise lê
@@ -185,7 +185,7 @@ ou expirarem. FastTrack pode ignorar o firewall para pacotes de conexões já
 marcadas; o painel não desabilita, move, limpa ou excepciona FastTrack. [Packet Flow oficial da MikroTik](https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet%2BFlow%2Bin%2BRouterOS/)
 
 O check de FastTrack para banda pode continuar como aviso diagnóstico, mas Fase
-4 não altera Simple Queues nem velocidade. Não confundir warning com falha nem
+4 não altera Simple Queues nem velocidade; Fase 5 usa capability distinta. Não confundir warning com falha nem
 com autorização para modificar FastTrack.
 
 ## Credenciais, auditoria e limites
@@ -203,7 +203,7 @@ registra somente `OPERATION_PLAN_CREATED`. Nenhum segredo, Authorization, body
 RouterOS, snapshot bruto ou dump é persistido; falha de auditoria não repete a
 mutação.
 
-Não há mutação de DHCP/leases, queues/Simple Queues, FastTrack, NAT, rota,
+Não há mutação de DHCP/leases, Queue Tree, FastTrack, NAT, rota,
 bridge, IPv6, address-list ou velocidade. Só a regra MAC allow-listed de
 `/ip/firewall/filter` pode ser criada/removida pela Fase 4.
 
@@ -216,7 +216,7 @@ ordem, idempotência, conflitos e rollback manual. Ele está em
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 está documentada em [routeros-bandwidth-control.md](routeros-bandwidth-control.md).
 
 ## Fontes oficiais da MikroTik
 

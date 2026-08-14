@@ -6,6 +6,7 @@ import com.mikrotikmanager.gateway.MockDeviceBlockMutationGateway;
 import com.mikrotikmanager.gateway.DeviceBlockMutationGateway;
 import com.mikrotikmanager.gateway.routeros.RouterOsRestGateway;
 import com.mikrotikmanager.gateway.routeros.RouterOsWriteClient;
+import com.mikrotikmanager.gateway.routeros.RouterOsQueueWriteClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -37,5 +38,11 @@ class GatewayConfiguration {
     @ConditionalOnProperty(name = "mikrotik.mock-mode", havingValue = "false")
     RouterOsWriteClient routerOsWriteClient(MikrotikProperties properties) {
         return new RouterOsWriteClient(properties);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "mikrotik.mock-mode", havingValue = "false")
+    RouterOsQueueWriteClient routerOsQueueWriteClient(MikrotikProperties properties) {
+        return new RouterOsQueueWriteClient(properties);
     }
 }

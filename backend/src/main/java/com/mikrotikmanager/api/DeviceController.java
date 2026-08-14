@@ -6,6 +6,7 @@ import com.mikrotikmanager.api.dto.UpdateDeviceRequest;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.service.DeviceService;
 import com.mikrotikmanager.service.DeviceBlockExecutionService;
+import com.mikrotikmanager.service.BandwidthExecutionService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,10 +24,13 @@ import java.util.List;
 public class DeviceController {
     private final DeviceService deviceService;
     private final DeviceBlockExecutionService deviceBlockExecutionService;
+    private final BandwidthExecutionService bandwidthExecutionService;
 
-    public DeviceController(DeviceService deviceService, DeviceBlockExecutionService deviceBlockExecutionService) {
+    public DeviceController(DeviceService deviceService, DeviceBlockExecutionService deviceBlockExecutionService,
+                            BandwidthExecutionService bandwidthExecutionService) {
         this.deviceService = deviceService;
         this.deviceBlockExecutionService = deviceBlockExecutionService;
+        this.bandwidthExecutionService = bandwidthExecutionService;
     }
 
     @GetMapping
@@ -46,7 +50,7 @@ public class DeviceController {
 
     @PutMapping("/{macAddress}/speed")
     public DeviceResponse setSpeed(@PathVariable String macAddress, @Valid @RequestBody SpeedLimitRequest request) {
-        return ResponseMapper.device(deviceService.setSpeed(macAddress,
+        return ResponseMapper.device(bandwidthExecutionService.setDeviceSpeed(macAddress,
                 new SpeedLimit(request.downloadBps(), request.uploadBps())));
     }
 

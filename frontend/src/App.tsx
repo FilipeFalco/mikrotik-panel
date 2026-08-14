@@ -20,6 +20,8 @@ interface Confirmation {
   plan: OperationPlan;
 }
 
+interface SpeedConfirmation { plan: OperationPlan; intent: Extract<PlanIntent, { type: 'SET_PORT_SPEED' | 'SET_DEVICE_SPEED' }>; }
+
 type PlanIntent =
   | { type: 'BLOCK_DEVICE'; macAddress: string }
   | { type: 'UNBLOCK_DEVICE'; macAddress: string }
@@ -78,6 +80,7 @@ export default function App() {
   const [selectedPortName, setSelectedPortName] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [speedConfirmation, setSpeedConfirmation] = useState<SpeedConfirmation | null>(null);
   const [planIntent, setPlanIntent] = useState<PlanIntent | null>(null);
   const [operationPlan, setOperationPlan] = useState<OperationPlan | null>(null);
   const [loading, setLoading] = useState(true);
@@ -267,6 +270,8 @@ export default function App() {
     systemStatus?.connected
       && (systemStatus.deviceBlockExecutionEnabled ?? !routerControlsReadOnly),
   );
+  const bandwidthExecutionEnabled = Boolean(systemStatus?.connected
+    && (systemStatus.bandwidthExecutionEnabled ?? !routerControlsReadOnly));
 
   const savePortConfiguration = async (
     interfaceName: string,
@@ -320,8 +325,7 @@ export default function App() {
   };
 
   const savePortSpeed = (port: Port, downloadBps: number, uploadBps: number) => {
-    if (routerControlsReadOnly) return;
-    void runOperation(() => api.updatePortSpeed(port.interfaceName, downloadBps, uploadBps));
+    previewPlan({ type: 'SET_PORT_SPEED', interfaceName: port.interfaceName, downloadBps, uploadBps });
   };
 
   const saveDevice = (device: Device, friendlyName: string, notes: string, downloadBps: number, uploadBps: number) => {
@@ -329,13 +333,16 @@ export default function App() {
       if (friendlyName !== (device.friendlyName ?? '') || notes !== (device.notes ?? '')) {
         await api.updateDevice(device.macAddress, friendlyName, notes);
       }
-      if (!routerControlsReadOnly && (downloadBps !== device.downloadLimitBps || uploadBps !== device.uploadLimitBps)) {
-        await api.updateDeviceSpeed(device.macAddress, downloadBps, uploadBps);
-      }
-    }, () => setSelectedDevice(null));
+    }, () => {
+      if (downloadBps !== device.downloadLimitBps || uploadBps !== device.uploadLimitBps) previewPlan({ type: 'SET_DEVICE_SPEED', macAddress: device.macAddress, downloadBps, uploadBps });
+    });
   };
 
   const requestBlockConfirmation = (plan: OperationPlan) => {
+    if (plan.operationType === 'SET_PORT_SPEED' || plan.operationType === 'SET_DEVICE_SPEED') {
+      if (!bandwidthExecutionEnabled || !canConfirmOperationPlan(plan, bandwidthExecutionEnabled) || !planIntent || (planIntent.type !== 'SET_PORT_SPEED' && planIntent.type !== 'SET_DEVICE_SPEED')) return;
+      setSpeedConfirmation({ plan, intent: planIntent }); return;
+    }
     if (!deviceBlockExecutionEnabled || !canConfirmOperationPlan(plan, deviceBlockExecutionEnabled)) return;
     const planMac = plan.target.macAddress ?? plan.target.identifier;
     const device = (selectedDevice && comparableMac(selectedDevice.macAddress) === comparableMac(planMac))
@@ -346,6 +353,16 @@ export default function App() {
       return;
     }
     setConfirmation({ device, block: plan.operationType === 'BLOCK_DEVICE', plan });
+  };
+
+  const confirmSpeed = () => {
+    if (!speedConfirmation || !bandwidthExecutionEnabled) return;
+    const { intent } = speedConfirmation;
+    void runOperation(() => intent.type === 'SET_PORT_SPEED'
+      ? api.updatePortSpeed(intent.interfaceName, intent.downloadBps, intent.uploadBps)
+      : api.updateDeviceSpeed(intent.macAddress, intent.downloadBps, intent.uploadBps), () => {
+        setSpeedConfirmation(null); setPlanIntent(null); setOperationPlan(null);
+      });
   };
 
   const confirmBlock = () => {
@@ -389,7 +406,7 @@ export default function App() {
     if (view === 'devices') return <div className="page-stack"><section className="page-heading"><div><p className="eyebrow">Todos os clientes</p><h1>Dispositivos</h1><p>Pesquise por nome, IP ou MAC e gerencie cada dispositivo.</p></div></section><DeviceList devices={devices} onSelect={setSelectedDevice} /></div>;
     if (view === 'history') return <History entries={audit} />;
     if (view === 'settings') return <Settings systemStatus={systemStatus} diagnostics={diagnostics} readiness={readiness} reconciliation={reconciliation} ports={ports} testing={testing} saving={busy} analyzing={analyzing} onTestConnection={testConnection} onAnalyzeRouterOS={analyzeRouterOS} onSavePort={savePortConfiguration} />;
-    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} readOnly={routerControlsReadOnly} onSaveSpeed={savePortSpeed} onPreviewSpeed={(port, downloadBps, uploadBps) => previewPlan({ type: 'SET_PORT_SPEED', interfaceName: port.interfaceName, downloadBps, uploadBps })} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
+    if (view === 'port' && selectedPort) return <PortDetail port={selectedPort} saving={busy} readOnly={false} onSaveSpeed={savePortSpeed} onPreviewSpeed={(port, downloadBps, uploadBps) => previewPlan({ type: 'SET_PORT_SPEED', interfaceName: port.interfaceName, downloadBps, uploadBps })} onDeviceSelect={setSelectedDevice} onBack={() => navigate('dashboard')} />;
     return <div className="empty-state"><h2>Porta não encontrada</h2><button className="button primary" type="button" onClick={() => navigate('dashboard')}>Voltar ao dashboard</button></div>;
   };
 
@@ -398,19 +415,19 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">M</span><div><strong>MikroTik</strong><small>Local Manager</small></div></div>
         <nav aria-label="Navegação principal">{navItems.map((item) => <button key={item.id} type="button" className={view === item.id ? 'nav-item active' : 'nav-item'} aria-current={view === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.symbol}</span>{item.label}</button>)}</nav>
-        <div className="sidebar-foot"><span>Local only</span><small>v0.4 · Fase 4</small></div>
+        <div className="sidebar-foot"><span>Local only</span><small>v0.5 · Fase 5</small></div>
       </aside>
       <main className="main-content">
         <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
         {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
         {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>{deviceBlockExecutionEnabled ? 'RouterOS com escrita restrita.' : 'RouterOS em modo somente leitura.'}</strong><span>{deviceBlockExecutionEnabled ? 'A aplicação pode criar/remover somente regras MTMGR de bloqueio de dispositivos. Demais operações RouterOS continuam indisponíveis.' : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
-        {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>A verificação é informativa nesta fase; nenhuma regra será alterada automaticamente.</span></section>}
+        {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>FastTrack ativo impede a aplicação segura de limites por Simple Queue nesta fase. Bloqueio por MAC continua independente; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>
       <DeviceDetails
         device={selectedDevice}
         busy={busy}
-        readOnly={routerControlsReadOnly}
+        readOnly={false}
         blockExecutionEnabled={deviceBlockExecutionEnabled}
         onClose={() => setSelectedDevice(null)}
         onSave={saveDevice}
@@ -422,11 +439,24 @@ export default function App() {
         open={Boolean(planIntent) && !confirmation}
         plan={operationPlan}
         loading={planning}
-        executionEnabled={deviceBlockExecutionEnabled}
+        executionEnabled={operationPlan?.operationType === 'SET_PORT_SPEED' || operationPlan?.operationType === 'SET_DEVICE_SPEED' ? bandwidthExecutionEnabled : deviceBlockExecutionEnabled}
         device={selectedDevice}
         onConfirm={requestBlockConfirmation}
         onClose={() => { setPlanIntent(null); setOperationPlan(null); }}
         onRefresh={refreshPlan}
+      />
+      <ConfirmDialog
+        open={Boolean(speedConfirmation)}
+        title={speedConfirmation?.intent.type === 'SET_PORT_SPEED' ? 'Confirmar limite da porta' : 'Confirmar limite do dispositivo'}
+        description="O backend ignorará dados do preview e fará nova leitura, replanejamento e verificação antes de qualquer escrita Simple Queue."
+        confirmLabel={speedConfirmation?.intent.type === 'SET_PORT_SPEED' ? 'Confirmar limite da porta' : 'Confirmar limite do dispositivo'}
+        details={speedConfirmation ? [{ label: 'Download', value: `${speedConfirmation.intent.downloadBps} bps` }, { label: 'Upload', value: `${speedConfirmation.intent.uploadBps} bps` }, { label: 'Ownership', value: speedConfirmation.plan.ownership }] : []}
+        warnings={speedConfirmation?.plan.warnings.map((warning) => `${warning.code}: ${warning.description}`) ?? []}
+        confirmDisabled={!bandwidthExecutionEnabled}
+        confirmDisabledReason="A capability de banda está desabilitada; o preview continua disponível."
+        busy={busy}
+        onCancel={() => !busy && setSpeedConfirmation(null)}
+        onConfirm={confirmSpeed}
       />
       <ConfirmDialog
         open={Boolean(confirmation)}

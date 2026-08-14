@@ -168,9 +168,12 @@ public class WriteReadinessService {
         boolean executionEnabled = connection.mockMode() || (properties.writeEnabled()
                 && properties.deviceBlockWritesEnabled() && properties.writeCredentialsConfigured());
         boolean readyForFutureExecution = executionEnabled && !hasBlockingFinding(checks);
+        boolean bandwidthExecutionEnabled = connection.mockMode() || (properties.writeEnabled() && properties.bandwidthWritesEnabled()
+                && properties.writeCredentialsConfigured() && !reconciliation.fastTrackDetected() && !hasBlockingDrift);
         return new WriteReadinessReport(Instant.now(clock), connection.mockMode(), properties.writeEnabled(),
                 readyForFutureExecution, executionEnabled, WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, summary,
-                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", true);
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", true,
+                properties.bandwidthWritesEnabled(), bandwidthExecutionEnabled);
     }
 
     private WriteReadinessReport unavailableReport(GatewayConnectionStatus connection) {
@@ -179,7 +182,8 @@ public class WriteReadinessService {
                 "RouterOS não está conectado; a análise observacional não foi executada.");
         return new WriteReadinessReport(Instant.now(clock), mockMode, properties.writeEnabled(), false, false,
                 WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, emptySummary(),
-                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false);
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false,
+                properties.bandwidthWritesEnabled(), false);
     }
 
     private WriteReadinessReport analysisUnavailableReport(GatewayConnectionStatus connection) {
@@ -189,7 +193,8 @@ public class WriteReadinessService {
                 "A conexão de leitura foi confirmada, mas a análise não pôde obter um snapshot completo."));
         return new WriteReadinessReport(Instant.now(clock), connection.mockMode(), properties.writeEnabled(), false, false,
                 WriteReadinessReport.PHASE_4_DEVICE_BLOCK_NOTICE, checks, emptySummary(),
-                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false);
+                properties.deviceBlockWritesEnabled(), properties.writeCredentialsConfigured(), "FIREWALL_MAC_RULE", false,
+                properties.bandwidthWritesEnabled(), false);
     }
 
     private List<ReadinessCheck> unavailableChecks(boolean mockMode, String connectionDetail) {

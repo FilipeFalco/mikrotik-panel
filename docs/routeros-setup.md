@@ -7,7 +7,7 @@ não altera DHCP, queues, FastTrack, NAT, rotas, bridge, IPv6 ou velocidade.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 adiciona Simple Queues MTMGR; siga também [o guia de bandwidth](routeros-bandwidth-control.md).
 
 Faça a preparação com uma conta administrativa separada e janela controlada.
 Antes de qualquer habilitação de escrita, faça backup/export e siga o
@@ -222,12 +222,12 @@ workspace.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+Para Simple Queue e a flag independente de banda, consulte [o guia da Fase 5](routeros-bandwidth-control.md).
 
 ## Fora do escopo
 
 Esta preparação não autoriza nem implementa alteração de DHCP/leases,
-Simple Queues/queues, FastTrack, NAT, rota, bridge, IPv6, address-list,
+Queue Tree, FastTrack, NAT, rota, bridge, IPv6, address-list,
 interface ou velocidade. A Fase 4 só escreve a regra MAC allow-listed de
 `/ip/firewall/filter`.
 

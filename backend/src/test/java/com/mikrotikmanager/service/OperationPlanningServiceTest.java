@@ -105,27 +105,27 @@ class OperationPlanningServiceTest {
         assertThat(precondition(plan, "LIMIT_WITHIN_PARENT"))
                 .extracting(PlanPrecondition::satisfied, PlanPrecondition::severity)
                 .containsExactly(false, PlanSeverity.BLOCKING);
-        assertThat(plan.plannedChanges()).singleElement().extracting(change -> change.action()).isEqualTo("UPDATE_CANDIDATE");
+        assertThat(plan.plannedChanges()).singleElement().extracting(change -> change.action()).isEqualTo("UPDATE_DEVICE_QUEUE");
 
         harness.assertOnlyReadPlanningDependenciesUsed(snapshot);
     }
 
     @Test
-    void includesFastTrackAsAWarningForBandwidthPlanningWithoutBlockingAOtherwiseCleanPlan() {
+    void blocksBandwidthPlanningWhenFastTrackIsActive() {
         RouterSnapshot snapshot = snapshot(PORT_LIMIT, false, true, null, SpeedLimit.UNLIMITED);
         PlanningHarness harness = harness(snapshot);
 
         OperationPlan plan = harness.service().planPortSpeed(INTERFACE, new SpeedLimit(90_000_000L, 10_000_000L));
 
         assertThat(plan.operationType()).isEqualTo(PlannedOperationType.SET_PORT_SPEED);
-        assertThat(plan.readyForFutureExecution()).isTrue();
+        assertThat(plan.readyForFutureExecution()).isFalse();
         assertThat(plan.executable()).isFalse();
         assertThat(precondition(plan, "FASTTRACK_REVIEWED"))
                 .extracting(PlanPrecondition::satisfied, PlanPrecondition::severity)
-                .containsExactly(false, PlanSeverity.WARNING);
-        assertThat(warning(plan, "FASTTRACK_ACTIVE"))
+                .containsExactly(false, PlanSeverity.BLOCKING);
+        assertThat(warning(plan, "FASTTRACK_BYPASSES_SIMPLE_QUEUE"))
                 .extracting(PlanWarning::severity)
-                .isEqualTo(PlanSeverity.WARNING);
+                .isEqualTo(PlanSeverity.BLOCKING);
 
         harness.assertOnlyReadPlanningDependenciesUsed(snapshot);
     }

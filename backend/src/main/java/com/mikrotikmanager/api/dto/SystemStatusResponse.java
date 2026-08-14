@@ -10,6 +10,7 @@ public record SystemStatusResponse(
         String message,
         boolean readOnly,
         boolean fastTrackDetected,
-        boolean deviceBlockExecutionEnabled
+        boolean deviceBlockExecutionEnabled,
+        boolean bandwidthExecutionEnabled
 ) {
 }

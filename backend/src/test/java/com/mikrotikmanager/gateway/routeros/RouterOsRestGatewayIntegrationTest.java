@@ -85,9 +85,10 @@ class RouterOsRestGatewayIntegrationTest {
             fake.clearRequests();
             assertThat(gateway.listDevices()).hasSize(3);
 
-            assertThat(fake.requests()).hasSize(2);
+            assertThat(fake.requests()).hasSize(3);
             assertThat(fake.requestCount(DHCP_SERVERS)).isEqualTo(1);
             assertThat(fake.requestCount(DHCP_LEASES)).isEqualTo(1);
+            assertThat(fake.requestCount(SIMPLE_QUEUES)).isEqualTo(1);
             assertThat(fake.requests()).allSatisfy(request -> assertThat(request.method()).isEqualTo("GET"));
         }
     }

@@ -206,6 +206,7 @@ public final class DeviceBlockExecutionService {
         ApiErrorCode code = switch (exception.errorType()) {
             case CREDENTIALS_MISSING -> ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING;
             case DEVICE_BLOCK_WRITES_DISABLED -> ApiErrorCode.DEVICE_BLOCK_WRITES_DISABLED;
+            case BANDWIDTH_WRITES_DISABLED -> ApiErrorCode.BANDWIDTH_WRITES_DISABLED;
             case GLOBAL_WRITES_DISABLED -> ApiErrorCode.MIKROTIK_WRITES_DISABLED;
             case PERMISSION_DENIED -> ApiErrorCode.MIKROTIK_WRITE_PERMISSION_DENIED;
             case NOT_FOUND, REJECTED -> ApiErrorCode.MIKROTIK_OPERATION_FAILED;
@@ -219,6 +220,7 @@ public final class DeviceBlockExecutionService {
             case MIKROTIK_WRITE_PERMISSION_DENIED -> "O usuário de escrita do MikroTik não possui permissão para esta operação.";
             case MIKROTIK_WRITE_OUTCOME_UNKNOWN -> "O resultado da escrita no MikroTik não pôde ser confirmado; nenhuma repetição automática foi feita.";
             case MIKROTIK_WRITE_CREDENTIALS_MISSING -> "As credenciais separadas de escrita do MikroTik não estão configuradas.";
+            case BANDWIDTH_WRITES_DISABLED -> "A escrita de limites de banda está desabilitada para esta instância.";
             default -> "A alteração no MikroTik não pôde ser concluída.";
         });
     }
@@ -345,6 +347,7 @@ public final class DeviceBlockExecutionService {
             return switch (writeException.errorType()) {
                 case CREDENTIALS_MISSING -> ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING.name();
                 case DEVICE_BLOCK_WRITES_DISABLED -> ApiErrorCode.DEVICE_BLOCK_WRITES_DISABLED.name();
+                case BANDWIDTH_WRITES_DISABLED -> ApiErrorCode.BANDWIDTH_WRITES_DISABLED.name();
                 case GLOBAL_WRITES_DISABLED -> ApiErrorCode.MIKROTIK_WRITES_DISABLED.name();
                 case PERMISSION_DENIED -> ApiErrorCode.MIKROTIK_WRITE_PERMISSION_DENIED.name();
                 case OUTCOME_UNKNOWN -> ApiErrorCode.MIKROTIK_WRITE_OUTCOME_UNKNOWN.name();

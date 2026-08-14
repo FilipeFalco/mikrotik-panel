@@ -48,4 +48,23 @@ public class MikrotikWriteGuard {
                     "As credenciais separadas de escrita do MikroTik não estão configuradas.");
         }
     }
+
+    /** Fase 5's independent Simple Queue capability gate. */
+    public void checkBandwidthWriteAllowed() {
+        if (properties.mockMode()) {
+            return;
+        }
+        if (!properties.writeEnabled()) {
+            throw new ApiException(ApiErrorCode.MIKROTIK_WRITES_DISABLED, HttpStatus.FORBIDDEN,
+                    "As operações de escrita no MikroTik estão desabilitadas para esta instância.");
+        }
+        if (!properties.bandwidthWritesEnabled()) {
+            throw new ApiException(ApiErrorCode.BANDWIDTH_WRITES_DISABLED, HttpStatus.FORBIDDEN,
+                    "A escrita de limites de banda está desabilitada para esta instância.");
+        }
+        if (!properties.writeCredentialsConfigured()) {
+            throw new ApiException(ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING, HttpStatus.FORBIDDEN,
+                    "As credenciais separadas de escrita do MikroTik não estão configuradas.");
+        }
+    }
 }

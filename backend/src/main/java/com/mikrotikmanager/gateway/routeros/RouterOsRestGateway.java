@@ -104,10 +104,9 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
 
     @Override
     public List<RouterDevice> listDevices() {
-        return read(() -> dhcpMapper.toRouterDevices(
-                restClient.getDhcpServers(RouterOsDhcpServerDto.class),
-                restClient.getDhcpLeases(RouterOsDhcpLeaseDto.class)
-        ));
+        return read(() -> withDeviceQueueSpeeds(dhcpMapper.toRouterDevices(
+                restClient.getDhcpServers(RouterOsDhcpServerDto.class), restClient.getDhcpLeases(RouterOsDhcpLeaseDto.class)),
+                RouterOsSimpleQueueMapper.toOwnedDeviceSpeeds(restClient.getSimpleQueues(RouterOsSimpleQueueDto.class))));
     }
 
     @Override
@@ -184,7 +183,8 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                                 RouterOsValueParser.booleanOrDefault(lease.disabled(), false, "dhcp-lease.disabled"));
                     })
                     .toList();
-            List<RouterSimpleQueue> queues = restClient.getSimpleQueues(RouterOsSimpleQueueDto.class).stream()
+            List<RouterOsSimpleQueueDto> queueDtos = restClient.getSimpleQueues(RouterOsSimpleQueueDto.class);
+            List<RouterSimpleQueue> queues = queueDtos.stream()
                     .filter(Objects::nonNull)
                     .map(queue -> new RouterSimpleQueue(
                             RouterOsValueParser.optionalText(queue.id()),
@@ -193,7 +193,14 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                             RouterOsValueParser.optionalText(queue.target()),
                             RouterOsRateParser.parseSimpleQueueMaxLimit(queue.maxLimit()).orElse(null),
                             RouterOsValueParser.booleanOrDefault(queue.disabled(), false, "queue/simple.disabled"),
-                            RouterOsValueParser.booleanOrDefault(queue.dynamic(), false, "queue/simple.dynamic")))
+                            RouterOsValueParser.booleanOrDefault(queue.dynamic(), false, "queue/simple.dynamic"),
+                            RouterOsValueParser.booleanOrDefault(queue.invalid(), false, "queue/simple.invalid"),
+                            RouterOsValueParser.optionalText(queue.parent()), RouterOsValueParser.optionalText(queue.limitAt()),
+                            RouterOsValueParser.optionalText(queue.priority()), RouterOsValueParser.optionalText(queue.queue()),
+                            RouterOsValueParser.optionalText(queue.burstLimit()), RouterOsValueParser.optionalText(queue.burstThreshold()),
+                            RouterOsValueParser.optionalText(queue.burstTime()), RouterOsValueParser.optionalText(queue.bucketSize()),
+                            RouterOsValueParser.optionalText(queue.time()), RouterOsValueParser.optionalText(queue.packetMarks()),
+                            RouterOsValueParser.optionalText(queue.dstAddress())))
                     .toList();
             List<RouterOsFirewallFilterDto> filterDtos = restClient.getFirewallFilters(RouterOsFirewallFilterDto.class);
             List<RouterFirewallFilter> filters = filterDtos.stream()
@@ -211,9 +218,19 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                             RouterOsValueParser.booleanOrDefault(entry.dynamic(), false, "ip/firewall/address-list.dynamic")))
                     .toList();
             return new RouterSnapshot(Instant.now(), interfaces,
-                    servers, leases, mergeBlockStates(dhcpMapper.toRouterDevices(serverDtos, leaseDtos), toBlockStates(filters)),
+                    servers, leases, mergeBlockStates(withDeviceQueueSpeeds(dhcpMapper.toRouterDevices(serverDtos, leaseDtos),
+                            RouterOsSimpleQueueMapper.toOwnedDeviceSpeeds(queueDtos)), toBlockStates(filters)),
                     queues, filters, addressLists);
         });
+    }
+
+    private List<RouterDevice> withDeviceQueueSpeeds(List<RouterDevice> devices, Map<String, SpeedLimit> speeds) {
+        return devices.stream().map(device -> {
+            SpeedLimit speed = speeds.get(device.macAddress());
+            return speed == null ? device : new RouterDevice(device.leaseId(), device.macAddress(), device.hostname(), device.ipAddress(),
+                    device.dhcpServer(), device.interfaceName(), device.status(), device.blocked(), device.leaseComment(), speed,
+                    device.traffic(), device.lastSeenAt());
+        }).toList();
     }
 
     private List<RouterOsFirewallFilterDto> readFirewallFilters() {

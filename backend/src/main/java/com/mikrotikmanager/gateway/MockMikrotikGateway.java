@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /** In-memory RouterOS substitute used for local development and automated tests. */
-public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagnosticsGateway, RouterSnapshotReader {
+public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagnosticsGateway, RouterSnapshotReader, BandwidthMutationGateway {
     private final String host;
     private final int port;
     private final Map<String, RouterInterface> interfaces = new LinkedHashMap<>();
@@ -35,6 +35,8 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
     private final Map<String, SpeedLimit> portSpeeds = new LinkedHashMap<>();
     private final Map<String, String> portNetworks = new LinkedHashMap<>();
     private final Map<String, RouterFirewallFilter> managedBlockRules = new LinkedHashMap<>();
+    private final List<RouterSimpleQueue> managedQueues = new ArrayList<>();
+    private long queueSequence;
 
     public MockMikrotikGateway(String host, int port) {
         this.host = host;
@@ -116,7 +118,8 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
                         ManagedResourceIdentifier.expectedPortQueueName(entry.getKey()),
                         ManagedResourceIdentifier.expectedPortComment(entry.getKey()), portNetworks.get(entry.getKey()),
                         entry.getValue(), false, false))
-                .toList();
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        queues.addAll(managedQueues);
         List<RouterFirewallFilter> filters = new ArrayList<>();
         filters.addAll(managedBlockRules.values());
         filters.add(new RouterFirewallFilter("mock-fasttrack", "fasttrack-connection", "forward", "mock fixture", false, false));
@@ -135,6 +138,48 @@ public final class MockMikrotikGateway implements MikrotikGateway, MikrotikDiagn
     public synchronized void setDeviceSpeed(String macAddress, SpeedLimit speedLimit) {
         findState(macAddress).speedLimit = speedLimit;
     }
+
+    @Override public synchronized void createManagedQueue(com.mikrotikmanager.domain.ManagedSimpleQueue desired, String placeBeforeId) {
+        if (desired.comment().startsWith("MTMGR:PORT:")) {
+            String portName = desired.comment().substring("MTMGR:PORT:".length());
+            if (portSpeeds.containsKey(portName)) throw new IllegalArgumentException("Queue name already exists.");
+            portSpeeds.put(portName, desired.maxLimit()); portNetworks.put(portName, desired.target()); return;
+        }
+        if (managedQueues.stream().anyMatch(queue -> desired.name().equals(queue.name()))) throw new IllegalArgumentException("Queue name already exists.");
+        if (!"none".equals(desired.parent()) && allQueues().stream().noneMatch(queue -> desired.parent().equals(queue.name()))) {
+            throw new IllegalArgumentException("Parent queue does not exist.");
+        }
+        RouterSimpleQueue queue = new RouterSimpleQueue("*MQ" + (++queueSequence), desired.name(), desired.comment(), desired.target(),
+                desired.maxLimit(), false, false);
+        int index = indexById(placeBeforeId);
+        if (index < 0) managedQueues.add(queue); else managedQueues.add(index, queue);
+        updateDerivedSpeeds();
+    }
+    @Override public synchronized void updateManagedQueue(String id, com.mikrotikmanager.domain.ManagedSimpleQueue desired) {
+        String portName = portNameForId(id);
+        if (portName != null) { portSpeeds.put(portName, desired.maxLimit()); portNetworks.put(portName, desired.target()); return; }
+        int index = indexById(id); if (index < 0) throw new IllegalArgumentException("Queue not found.");
+        if (!"none".equals(desired.parent()) && allQueues().stream().noneMatch(queue -> desired.parent().equals(queue.name()))) throw new IllegalArgumentException("Parent queue does not exist.");
+        RouterSimpleQueue old = managedQueues.get(index);
+        managedQueues.set(index, new RouterSimpleQueue(old.id(), old.name(), old.comment(), desired.target(), desired.maxLimit(), false, false,
+                false, desired.parent(), null, null, null, null, null, null, null, null, null, null));
+        updateDerivedSpeeds();
+    }
+    @Override public synchronized void deleteManagedQueue(String id) {
+        String portName = portNameForId(id);
+        if (portName != null) { String name = ManagedResourceIdentifier.expectedPortQueueName(portName); if (managedQueues.stream().anyMatch(q -> name.equals(q.parent()))) throw new IllegalArgumentException("Queue has children."); portSpeeds.remove(portName); portNetworks.remove(portName); return; }
+        int index = indexById(id); if (index < 0) throw new IllegalArgumentException("Queue not found.");
+        String name = managedQueues.get(index).name();
+        if (managedQueues.stream().anyMatch(queue -> name.equals(queue.parent()))) throw new IllegalArgumentException("Queue has children.");
+        managedQueues.remove(index); updateDerivedSpeeds();
+    }
+
+    private List<RouterSimpleQueue> allQueues() { List<RouterSimpleQueue> all = new ArrayList<>();
+        portSpeeds.forEach((portName, limit) -> all.add(new RouterSimpleQueue("mock-port-" + portName, ManagedResourceIdentifier.expectedPortQueueName(portName), ManagedResourceIdentifier.expectedPortComment(portName), portNetworks.get(portName), limit, false, false))); all.addAll(managedQueues); return all; }
+    private int indexById(String id) { for (int i = 0; i < managedQueues.size(); i++) if (id != null && id.equals(managedQueues.get(i).id())) return i; return -1; }
+    private String portNameForId(String id) { if (id == null) return null; return portSpeeds.keySet().stream().filter(name -> id.equals("mock-queue-" + name)).findFirst().orElse(null); }
+    private void updateDerivedSpeeds() { for (MockDeviceState device : devices.values()) device.speedLimit = SpeedLimit.UNLIMITED;
+        for (RouterSimpleQueue queue : managedQueues) if (queue.comment().startsWith("MTMGR:DEVICE:")) { String mac = queue.comment().substring("MTMGR:DEVICE:".length()).replace('-', ':'); MockDeviceState state = devices.get(mac); if (state != null) state.speedLimit = queue.maxLimit(); } }
 
     @Override
     public synchronized void blockDevice(String macAddress) {

@@ -10,7 +10,7 @@ fallback para DHCP, address-list ou qualquer outro mecanismo.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 adiciona Simple Queues com flag independente; veja [controle de banda](routeros-bandwidth-control.md).
 
 ## Contrato fixo da regra
 
@@ -290,8 +290,8 @@ O teste acima ainda não foi executado neste workspace. O estado oficial é:
 
 Physical Phase 4 write validation: NOT RUN
 
-Não há mutação de DHCP, leases, Simple Queues, queues, FastTrack, NAT, rotas,
-bridge, IPv6 ou velocidade nesta Fase 4. A Fase 5 não foi iniciada.
+O escopo desta Fase 4 continua sem mutação de DHCP, leases, FastTrack, NAT, rotas,
+bridge ou IPv6. A Fase 5 adiciona somente Simple Queues MTMGR e não altera esta capability.
 
 ## Fontes oficiais da MikroTik
 

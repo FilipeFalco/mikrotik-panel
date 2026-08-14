@@ -9,7 +9,7 @@ RouterOS.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 usa `RouterOsQueueWriteClient` separado, lock global `ROUTEROS:SIMPLE_QUEUE` e capability independente de banda.
 
 ## Fronteiras de confiança
 
@@ -231,7 +231,7 @@ guia de [bloqueio e rollback](routeros-device-blocking.md).
 A Fase 4 não altera:
 
 - DHCP ou leases (`block-access`, `make-static`, rate-limit ou remoção);
-- Simple Queues, Queue Tree, PCQ ou qualquer limite de velocidade;
+- Queue Tree, PCQ ou qualquer limite fora de Simple Queue MTMGR;
 - FastTrack;
 - NAT, rotas, bridge, interface, VLAN, DNS ou IPv6;
 - address-lists, filtros que não sejam a regra MAC allow-listed ou qualquer
@@ -242,7 +242,7 @@ reordenação de regra drifted, retry cego ou validação física já realizada.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 não foi iniciada.
+A Fase 5 está limitada a Simple Queues MTMGR; FastTrack continua sem mutação.
 
 ## Fontes oficiais da MikroTik
 
