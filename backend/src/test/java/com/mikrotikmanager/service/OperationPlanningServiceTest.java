@@ -3,6 +3,7 @@ package com.mikrotikmanager.service;
 import com.mikrotikmanager.domain.DeviceStatus;
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
+import com.mikrotikmanager.domain.ManagedSimpleQueue;
 import com.mikrotikmanager.domain.OperationPlan;
 import com.mikrotikmanager.domain.PlanConflict;
 import com.mikrotikmanager.domain.PlanPrecondition;
@@ -22,6 +23,8 @@ import com.mikrotikmanager.domain.RouterAddressListEntry;
 import com.mikrotikmanager.domain.RouterInterface;
 import com.mikrotikmanager.domain.RouterSimpleQueue;
 import com.mikrotikmanager.domain.RouterSnapshot;
+import com.mikrotikmanager.domain.SetDeviceSpeedIntent;
+import com.mikrotikmanager.domain.SetPortSpeedIntent;
 import com.mikrotikmanager.domain.SpeedLimit;
 import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
 import com.mikrotikmanager.persistence.ManagedPortRepository;
@@ -144,6 +147,47 @@ class OperationPlanningServiceTest {
         assertThat(plan.plannedChanges()).singleElement().extracting(change -> change.action()).isEqualTo("NO_CHANGE");
 
         harness.assertOnlyReadPlanningDependenciesUsed(snapshot);
+    }
+
+    @Test
+    void blocksPortSpeedWhenAnExactlyOwnedPortQueueHasNameDrift() {
+        RouterSimpleQueue renamed = new RouterSimpleQueue("*20", "manual-renamed",
+                ManagedResourceIdentifier.expectedPortComment(INTERFACE), NETWORK, PORT_LIMIT, false, false);
+        OperationPlan plan = serviceWithRealReconciliation().planFromSnapshot(
+                new SetPortSpeedIntent(INTERFACE, PORT_LIMIT), snapshotWithQueues(List.of(renamed)));
+
+        assertThat(plan.changeRequired()).isTrue();
+        assertThat(plan.readyForFutureExecution()).isFalse();
+        assertThat(precondition(plan, "QUEUE_NAME_DRIFT"))
+                .extracting(PlanPrecondition::satisfied, PlanPrecondition::severity)
+                .containsExactly(false, PlanSeverity.BLOCKING);
+    }
+
+    @Test
+    void blocksDeviceTargetDriftRemovalInsteadOfClassifyingItAsRepairable() {
+        SpeedLimit deviceLimit = new SpeedLimit(50_000_000L, 15_000_000L);
+        ManagedSimpleQueue drifted = ManagedSimpleQueue.device(MAC, "10.10.10.99", "none", deviceLimit);
+        OperationPlan plan = serviceWithRealReconciliation().planFromSnapshot(
+                new SetDeviceSpeedIntent(MAC, SpeedLimit.UNLIMITED), snapshotWithQueues(List.of(queue("*21", drifted))));
+
+        assertThat(plan.changeRequired()).isTrue();
+        assertThat(plan.readyForFutureExecution()).isFalse();
+        assertThat(precondition(plan, "TARGET_DRIFT"))
+                .extracting(PlanPrecondition::satisfied, PlanPrecondition::severity)
+                .containsExactly(false, PlanSeverity.BLOCKING);
+        assertThat(plan.preconditions()).noneMatch(precondition -> "TARGET_DRIFT_REPAIRABLE".equals(precondition.code()));
+    }
+
+    @Test
+    void keepsFiniteDeviceTargetDriftRepairable() {
+        SpeedLimit deviceLimit = new SpeedLimit(50_000_000L, 15_000_000L);
+        ManagedSimpleQueue drifted = ManagedSimpleQueue.device(MAC, "10.10.10.99", "none", deviceLimit);
+        OperationPlan plan = serviceWithRealReconciliation().planFromSnapshot(
+                new SetDeviceSpeedIntent(MAC, deviceLimit), snapshotWithQueues(List.of(queue("*21", drifted))));
+
+        assertThat(plan.changeRequired()).isTrue();
+        assertThat(plan.readyForFutureExecution()).isTrue();
+        assertThat(precondition(plan, "TARGET_DRIFT_REPAIRABLE").satisfied()).isTrue();
     }
 
     @Test
@@ -308,6 +352,15 @@ class OperationPlanningServiceTest {
                 Clock.fixed(NOW, ZoneOffset.UTC)), snapshots, reconciliation, ports, audit);
     }
 
+    private OperationPlanningService serviceWithRealReconciliation() {
+        RouterSnapshotService snapshots = mock(RouterSnapshotService.class);
+        ManagedPortRepository ports = mock(ManagedPortRepository.class);
+        AuditService audit = mock(AuditService.class);
+        when(ports.findAll()).thenReturn(List.of(clientPort()));
+        ReconciliationService reconciliation = new ReconciliationService(snapshots, ports, Clock.fixed(NOW, ZoneOffset.UTC));
+        return new OperationPlanningService(snapshots, reconciliation, ports, audit, Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
     private RouterSnapshot snapshot(SpeedLimit portLimit, boolean blocked, boolean fastTrack, String leaseComment,
                                     SpeedLimit deviceLimit) {
         RouterDhcpLease lease = new RouterDhcpLease("*A1", MAC, "10.10.10.21", "dhcp-clientes", INTERFACE,
@@ -323,6 +376,21 @@ class OperationPlanningServiceTest {
                 List.of(new RouterInterface(INTERFACE, "ether", true, false, null)),
                 List.of(new RouterDhcpServer("*11", "dhcp-clientes", INTERFACE, false)),
                 List.of(lease), List.of(device), List.of(queue), filters, List.of());
+    }
+
+    private RouterSnapshot snapshotWithQueues(List<RouterSimpleQueue> queues) {
+        RouterDhcpLease lease = new RouterDhcpLease("*A1", MAC, "10.10.10.21", "dhcp-clientes", INTERFACE,
+                "bound", false, null, true, false);
+        RouterDevice device = new RouterDevice("*A1", MAC, "Galaxy S25", "10.10.10.21", "dhcp-clientes", INTERFACE,
+                DeviceStatus.ONLINE, false, null, SpeedLimit.UNLIMITED, null, NOW);
+        return new RouterSnapshot(NOW,
+                List.of(new RouterInterface(INTERFACE, "ether", true, false, null)),
+                List.of(new RouterDhcpServer("*11", "dhcp-clientes", INTERFACE, false)),
+                List.of(lease), List.of(device), queues, List.of(), List.of());
+    }
+
+    private RouterSimpleQueue queue(String id, ManagedSimpleQueue desired) {
+        return new RouterSimpleQueue(id, desired.name(), desired.comment(), desired.target(), desired.maxLimit(), false, false);
     }
 
     private RouterSnapshot snapshotWithFirewall(SpeedLimit portLimit,

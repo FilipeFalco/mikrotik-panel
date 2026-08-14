@@ -148,6 +148,43 @@ class BandwidthHttpIntegrationTest {
     }
 
     @Test
+    void portQueueNameDriftIsConflictBeforeAnyQueueWrite() throws Exception {
+        FAKE.seedSimpleQueues("""
+                [{".id":"*P1","name":"manual-renamed","comment":"MTMGR:PORT:ether2","target":"10.10.10.0/24","parent":"none","max-limit":"20M/100M","disabled":"false","dynamic":"false"}]
+                """);
+        FAKE.clearRequests();
+
+        setPortSpeed(100_000_000, 20_000_000).andExpect(status().isConflict());
+
+        assertThat(FAKE.writeJournal()).isEmpty();
+    }
+
+    @Test
+    void targetDriftWithUnlimitedRemovalIsConflictAndDoesNotDelete() throws Exception {
+        FAKE.seedSimpleQueues(deviceQueueWithTarget("10.10.10.21"));
+        setLeases("10.10.10.45", "10.10.10.22");
+        FAKE.clearRequests();
+
+        setDeviceSpeed(MAC_A, 0, 0).andExpect(status().isConflict());
+
+        assertThat(FAKE.writeJournal()).isEmpty();
+    }
+
+    @Test
+    void finiteTargetDriftStillPatchesTheCompleteDesiredStateOnce() throws Exception {
+        FAKE.seedSimpleQueues(deviceQueueWithTarget("10.10.10.21"));
+        setLeases("10.10.10.45", "10.10.10.22");
+        FAKE.clearRequests();
+
+        setDeviceSpeed(MAC_A, 50_000_000, 15_000_000).andExpect(status().isOk());
+
+        assertThat(FAKE.writeJournal()).singleElement().satisfies(write -> {
+            assertThat(write.method()).isEqualTo("PATCH");
+            assertThat(json(write.body()).path("target").asText()).isEqualTo("10.10.10.45/32");
+        });
+    }
+
+    @Test
     void hierarchyPreflightCreatesThenReparentsOnlySafeChildrenAndRejectsBurstBeforeParentPut() throws Exception {
         FAKE.seedSimpleQueues(safeStandaloneChildren());
         setPortSpeed(100_000_000, 20_000_000).andExpect(status().isOk());
@@ -204,6 +241,12 @@ class BandwidthHttpIntegrationTest {
                 [{".id":"*Q1","name":"mtmgr-device-AABBCCDDEE01","comment":"MTMGR:DEVICE:AA-BB-CC-DD-EE-01","target":"10.10.10.21/32","parent":"none","max-limit":"5M/40M","disabled":"false","dynamic":"false"},
                  {".id":"*Q2","name":"mtmgr-device-AABBCCDDEE02","comment":"MTMGR:DEVICE:AA-BB-CC-DD-EE-02","target":"10.10.10.22/32","parent":"none","max-limit":"5M/40M","disabled":"false","dynamic":"false"}]
                 """;
+    }
+
+    private static String deviceQueueWithTarget(String target) {
+        return """
+                [{".id":"*Q1","name":"mtmgr-device-AABBCCDDEE01","comment":"MTMGR:DEVICE:AA-BB-CC-DD-EE-01","target":"%s/32","parent":"none","max-limit":"15M/50M","disabled":"false","dynamic":"false"}]
+                """.formatted(target);
     }
 
     private static String parentWithChildren() {

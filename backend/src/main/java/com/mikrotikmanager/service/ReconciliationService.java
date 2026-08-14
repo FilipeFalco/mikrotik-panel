@@ -124,7 +124,7 @@ public class ReconciliationService {
         List<ReconciliationFinding> drift = new ArrayList<>();
         if (!expectedName.equals(queue.name())) {
             drift.add(new ReconciliationFinding("QUEUE_NAME_DRIFT", "O nome observado diverge da convenção futura da aplicação.",
-                    PlanSeverity.WARNING));
+                    PlanSeverity.BLOCKING));
         }
         if (!port.network().equals(queue.target())) {
             drift.add(new ReconciliationFinding("QUEUE_TARGET_DRIFT", "O target observado diverge do CIDR local da porta.",

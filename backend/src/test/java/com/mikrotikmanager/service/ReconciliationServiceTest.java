@@ -79,6 +79,21 @@ class ReconciliationServiceTest {
     }
 
     @Test
+    void reportsExactOwnedPortQueueWithWrongNameAsBlockingDrift() {
+        ReconciliationReport report = analyze(List.of(queue(
+                "manual-renamed", ManagedResourceIdentifier.expectedPortComment(INTERFACE), NETWORK, knownLimit())));
+
+        ReconciliationResource resource = resource(report);
+        assertThat(resource.ownership()).isEqualTo(ResourceOwnership.MANAGED);
+        assertThat(resource.status()).isEqualTo(ReconciliationStatus.DRIFTED);
+        assertThat(resource.conflict()).isFalse();
+        assertThat(resource.findings()).singleElement().satisfies(finding -> {
+            assertThat(finding.code()).isEqualTo("QUEUE_NAME_DRIFT");
+            assertThat(finding.severity()).isEqualTo(PlanSeverity.BLOCKING);
+        });
+    }
+
+    @Test
     void exactOwnershipRemainsManagedWhenItsOverlappingTargetIsDrifted() {
         ReconciliationReport report = analyze(List.of(queue(
                 ManagedResourceIdentifier.expectedPortQueueName(INTERFACE),

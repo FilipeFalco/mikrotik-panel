@@ -638,7 +638,7 @@ public class OperationPlanningService {
                                                         boolean requestedLimitValid) {
         RouterSimpleQueue observed = device.deviceQueue();
         ReconciliationResource resource = device.deviceQueueResource();
-        if (!requestedLimitValid || desired == null || !device.hasUsableDevice() || observed == null || resource == null
+        if (!requestedLimitValid || desired == null || desired.maxLimit().isUnlimited() || !device.hasUsableDevice() || observed == null || resource == null
                 || resource.ownership() != ResourceOwnership.MANAGED
                 || resource.status() == ReconciliationStatus.CONFLICT
                 || resource.status() == ReconciliationStatus.AMBIGUOUS_OWNERSHIP

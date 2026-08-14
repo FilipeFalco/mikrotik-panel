@@ -34,6 +34,8 @@ class BandwidthExecutionServiceTest {
     private static final String IFACE = "ether2";
     private static final String NETWORK = "10.10.10.0/24";
     private static final String MAC = "AA:BB:CC:DD:EE:01";
+    private static final String MAC_B = "AA:BB:CC:DD:EE:02";
+    private static final String MAC_C = "AA:BB:CC:DD:EE:03";
     private static final String IP = "10.10.10.45";
     private static final SpeedLimit LIMIT = new SpeedLimit(100_000_000, 20_000_000);
 
@@ -164,6 +166,32 @@ class BandwidthExecutionServiceTest {
         verifyNoInteractions(harness.mutations());
     }
 
+    @Test
+    void hierarchyPartialApplyStopsAfterFailedChildRefreshesStateAndNeverRollsBack() {
+        SpeedLimit childLimit = new SpeedLimit(40_000_000, 5_000_000);
+        ManagedSimpleQueue childA = ManagedSimpleQueue.device(MAC, IP, "none", childLimit);
+        ManagedSimpleQueue childB = ManagedSimpleQueue.device(MAC_B, "10.10.10.46", "none", childLimit);
+        ManagedSimpleQueue childC = ManagedSimpleQueue.device(MAC_C, "10.10.10.47", "none", childLimit);
+        RouterSnapshot before = hierarchySnapshot(List.of(
+                queue("*QA", childA), queue("*QB", childB), queue("*QC", childC)));
+        Harness harness = harness(before, before, executablePlan(true));
+        doThrow(new RouterOsWriteClientException(RouterOsWriteErrorType.REJECTED))
+                .when(harness.mutations()).updateManagedQueue(eq("*QB"), any());
+
+        assertThatThrownBy(() -> harness.service().setPortSpeed(IFACE, LIMIT))
+                .isInstanceOf(ApiException.class)
+                .extracting(error -> ((ApiException) error).code().name())
+                .isEqualTo("QUEUE_PARTIAL_APPLY");
+
+        ManagedSimpleQueue parent = ManagedSimpleQueue.port(IFACE, NETWORK, LIMIT);
+        verify(harness.mutations()).createManagedQueue(parent, "*QA");
+        verify(harness.mutations()).updateManagedQueue("*QA", withParent(childA, parent.name()));
+        verify(harness.mutations()).updateManagedQueue("*QB", withParent(childB, parent.name()));
+        verify(harness.mutations(), never()).updateManagedQueue(eq("*QC"), any());
+        verify(harness.mutations(), never()).deleteManagedQueue(any());
+        verify(harness.snapshots(), times(2)).capture();
+    }
+
     private Harness harness(RouterSnapshot before, RouterSnapshot after, OperationPlan plan) {
         RouterSnapshotService snapshots = mock(RouterSnapshotService.class);
         when(snapshots.capture()).thenReturn(before, after);
@@ -179,7 +207,7 @@ class BandwidthExecutionServiceTest {
         OperationPlanningService planning = mock(OperationPlanningService.class);
         when(planning.planFromSnapshot(any(), any())).thenReturn(plan);
         return new Harness(new BandwidthExecutionService(snapshots, ports, mutations, new OperationLockManager(), guard,
-                portService, deviceService, audit, planning), mutations);
+                portService, deviceService, audit, planning), mutations, snapshots);
     }
 
     private OperationPlan executablePlan(boolean changeRequired) {
@@ -199,13 +227,35 @@ class BandwidthExecutionServiceTest {
                 List.of(new RouterDhcpServer("*D1", "dhcp-clientes", IFACE, false)), List.of(lease), List.of(device), queues, List.of(), List.of());
     }
 
+    private RouterSnapshot hierarchySnapshot(List<RouterSimpleQueue> queues) {
+        List<RouterDevice> devices = List.of(
+                device("*L1", MAC, IP), device("*L2", MAC_B, "10.10.10.46"), device("*L3", MAC_C, "10.10.10.47"));
+        List<RouterDhcpLease> leases = List.of(
+                lease("*L1", MAC, IP), lease("*L2", MAC_B, "10.10.10.46"), lease("*L3", MAC_C, "10.10.10.47"));
+        return new RouterSnapshot(NOW, List.of(new RouterInterface(IFACE, "ether", true, false, null)),
+                List.of(new RouterDhcpServer("*D1", "dhcp-clientes", IFACE, false)), leases, devices, queues, List.of(), List.of());
+    }
+
+    private RouterDevice device(String id, String mac, String ip) {
+        return new RouterDevice(id, mac, "Phone", ip, "dhcp-clientes", IFACE, DeviceStatus.ONLINE,
+                false, null, SpeedLimit.UNLIMITED, null, NOW);
+    }
+
+    private RouterDhcpLease lease(String id, String mac, String ip) {
+        return new RouterDhcpLease(id, mac, ip, "dhcp-clientes", IFACE, "bound", false, null, true, false);
+    }
+
     private RouterSimpleQueue queue(String id, ManagedSimpleQueue desired) {
         return new RouterSimpleQueue(id, desired.name(), desired.comment(), desired.target(), desired.maxLimit(), false, false);
+    }
+
+    private ManagedSimpleQueue withParent(ManagedSimpleQueue queue, String parent) {
+        return new ManagedSimpleQueue(queue.name(), queue.comment(), queue.target(), parent, queue.maxLimit());
     }
 
     private ManagedPort port() {
         return new ManagedPort(1L, IFACE, "Clientes", "", NETWORK, "dhcp-clientes", ManagedPortRole.CLIENT, true, NOW, NOW);
     }
 
-    private record Harness(BandwidthExecutionService service, BandwidthMutationGateway mutations) { }
+    private record Harness(BandwidthExecutionService service, BandwidthMutationGateway mutations, RouterSnapshotService snapshots) { }
 }
