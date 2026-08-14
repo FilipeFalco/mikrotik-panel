@@ -47,7 +47,7 @@ it('shows a clearly identified dry-run without an execution or confirmation cont
   render(<OperationPlanDialog open plan={plan} loading={false} onClose={onClose} onRefresh={onRefresh} />);
 
   expect(screen.getByText('SIMULAÇÃO — nenhuma alteração será enviada ao MikroTik')).toBeInTheDocument();
-  expect(screen.getByText('Desabilitada na Fase 3')).toBeInTheDocument();
+  expect(screen.getByText('Desabilitada pela capability')).toBeInTheDocument();
   expect(screen.getByText('SIMPLE_QUEUE · Fila manual')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Fechar' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Atualizar análise' })).toBeInTheDocument();
@@ -99,6 +99,11 @@ const nonConfirmablePlans: Array<[string, Partial<OperationPlan>]> = [
     conflicts: [{ code: 'FOREIGN_RESOURCE', resourceType: 'FIREWALL', resourceName: 'manual-rule', resourceTarget: '10.10.10.21', ownership: 'FOREIGN' as const, description: 'Recurso externo.', severity: 'BLOCKING' as const }],
   }],
   ['no-op', { changeRequired: false }],
+  ['partial unlimited speed', {
+    operationType: 'SET_PORT_SPEED',
+    desiredState: { ...plan.desiredState, speedLimit: { downloadBps: 100_000_000, uploadBps: 0 } },
+    preconditions: [{ code: 'BANDWIDTH_LIMIT_VALID', description: 'Download e upload devem ser ambos ilimitados ou ambos limitados.', satisfied: false, severity: 'BLOCKING' as const }],
+  }],
 ];
 
 it.each(nonConfirmablePlans)('disables confirmation for %s', (_reason, override) => {
@@ -114,5 +119,5 @@ it.each(nonConfirmablePlans)('disables confirmation for %s', (_reason, override)
     />,
   );
 
-  expect(screen.getByRole('button', { name: 'Confirmar bloqueio' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: override.operationType === 'SET_PORT_SPEED' ? 'Confirmar limite da porta' : 'Confirmar bloqueio' })).toBeDisabled();
 });

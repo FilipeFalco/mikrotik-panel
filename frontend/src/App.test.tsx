@@ -381,3 +381,53 @@ it('shows restricted write rather than a global read-only label when device bloc
   expect(screen.getByText('RouterOS com escrita restrita.')).toBeInTheDocument();
   expect(screen.queryByText('RouterOS em modo somente leitura.')).not.toBeInTheDocument();
 });
+
+it('shows restricted write and the bandwidth-only notice when only Simple Queue execution is enabled', async () => {
+  const restrictedStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: false, bandwidthExecutionEnabled: true };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(restrictedStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText('RouterOS 7.16.2 · Escrita restrita')).toBeInTheDocument();
+  expect(screen.getByText('Controle de banda via Simple Queue habilitado. Demais operações RouterOS continuam indisponíveis.')).toBeInTheDocument();
+  expect(screen.queryByText('RouterOS em modo somente leitura.')).not.toBeInTheDocument();
+});
+
+it('shows restricted write and the combined notice when both capabilities are enabled', async () => {
+  const restrictedStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: true, bandwidthExecutionEnabled: true };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(restrictedStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText('RouterOS 7.16.2 · Escrita restrita')).toBeInTheDocument();
+  expect(screen.getByText('Bloqueio/liberação e controle de banda habilitados. Demais operações RouterOS continuam indisponíveis.')).toBeInTheDocument();
+  expect(screen.queryByText('RouterOS em modo somente leitura.')).not.toBeInTheDocument();
+});
+
+it('keeps the read-only label only when both restricted capabilities are disabled', async () => {
+  const disabledStatus: SystemStatus = { ...connectedReadOnlyStatus, deviceBlockExecutionEnabled: false, bandwidthExecutionEnabled: false };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/system/status') return jsonResponse(disabledStatus);
+    if (String(input) === '/api/ports') return jsonResponse(ports);
+    if (String(input) === '/api/devices') return jsonResponse(ports[0].devices);
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText('RouterOS 7.16.2 · Somente leitura')).toBeInTheDocument();
+  expect(screen.getByText('RouterOS em modo somente leitura.')).toBeInTheDocument();
+});

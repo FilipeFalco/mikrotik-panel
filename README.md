@@ -53,6 +53,10 @@ FastTrack ativo bloqueia somente a execução de banda; não é modificado.
 Ownership de bandwidth do dispositivo vem exclusivamente do comentário exato
 da `DEVICE_QUEUE`, nunca do comentário DHCP. Campos desconhecidos de queue são
 tratados como drift semântico, exceto counters RouterOS documentados como read-only.
+O planner compara o desired-state completo; `NO_CHANGE` implica zero mutações.
+Antes de criar uma hierarquia, todos os children passam por preflight; `TARGET_DRIFT`
+de DEVICE_QUEUE é a única convergência contextual permitida, em `SET_DEVICE_SPEED`
+e com lease DHCP bound. `queue` usa par upload/download e `total-queue` usa tipo único.
 `0/0` remove o limite; um limite finito exige download e upload positivos.
 O detalhe operacional está em
 [docs/routeros-device-blocking.md](docs/routeros-device-blocking.md).

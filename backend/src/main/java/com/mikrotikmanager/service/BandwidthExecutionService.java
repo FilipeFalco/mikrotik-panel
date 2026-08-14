@@ -60,7 +60,11 @@ public final class BandwidthExecutionService {
         return locks.withLock("ROUTEROS:SIMPLE_QUEUE", () -> locks.withLock("PORT:" + iface, () -> {
             guard.checkBandwidthWriteAllowed(); validateLimit(requested);
             RouterSnapshot before = snapshots.capture();
-            requireExecutablePreflight(planning.planFromSnapshot(new SetPortSpeedIntent(iface, requested), before));
+            OperationPlan freshPlan = planning.planFromSnapshot(new SetPortSpeedIntent(iface, requested), before);
+            // This is deliberately before every queue mutation path. The
+            // executor may never turn a preview NO_CHANGE into a PATCH.
+            if (!freshPlan.changeRequired()) return portService.getPort(iface);
+            requireExecutablePreflight(freshPlan);
             if (before.fastTrackDetected()) throw error(ApiErrorCode.FASTTRACK_BYPASSES_SIMPLE_QUEUE, HttpStatus.CONFLICT,
                     "FastTrack ativo impede a aplicação segura deste limite por Simple Queue nesta fase.");
             ManagedPort local = ports.findByInterfaceName(iface).orElseThrow(() -> error(ApiErrorCode.PORT_NOT_FOUND, HttpStatus.NOT_FOUND, "Porta não encontrada."));
@@ -83,7 +87,11 @@ public final class BandwidthExecutionService {
         return locks.withLock("ROUTEROS:SIMPLE_QUEUE", () -> locks.withLock("DEVICE:" + mac, () -> {
             guard.checkBandwidthWriteAllowed(); validateLimit(requested);
             RouterSnapshot before = snapshots.capture();
-            requireExecutablePreflight(planning.planFromSnapshot(new SetDeviceSpeedIntent(mac, requested), before));
+            OperationPlan freshPlan = planning.planFromSnapshot(new SetDeviceSpeedIntent(mac, requested), before);
+            // The same structural guard applies to the DHCP target-drift
+            // reconciliation path and to ordinary device no-ops.
+            if (!freshPlan.changeRequired()) return deviceService.getDevice(mac);
+            requireExecutablePreflight(freshPlan);
             if (before.fastTrackDetected()) throw error(ApiErrorCode.FASTTRACK_BYPASSES_SIMPLE_QUEUE, HttpStatus.CONFLICT,
                     "FastTrack ativo impede a aplicação segura deste limite por Simple Queue nesta fase.");
             RouterDevice device = uniqueDevice(before, mac);
@@ -105,46 +113,53 @@ public final class BandwidthExecutionService {
         ManagedSimpleQueue desired = ManagedSimpleQueue.port(iface, network, limit);
         List<RouterSimpleQueue> owned = ownedPort(snapshot, iface); requireUnique(owned);
         conflictForPort(snapshot, network, desired, iface);
-        List<RouterSimpleQueue> children = managedDeviceChildrenForPort(snapshot, iface);
-        for (RouterSimpleQueue child : children) if (exceeds(limit, child.maxLimit())) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED, HttpStatus.CONFLICT, "Um limite individual de dispositivo ultrapassa o novo limite da porta.");
+        List<RouterSimpleQueue> children = preflightPortHierarchy(snapshot, iface, desired, limit, owned.isEmpty());
         if (owned.isEmpty()) {
             String anchor = children.stream().map(RouterSimpleQueue::id).filter(this::validId).findFirst().orElse(null);
             writeCreate(desired, anchor);
-            // Parent must exist before every child is patched.
+            // Every candidate passed preflight before the parent was created.
             for (RouterSimpleQueue child : children) if (!desired.name().equals(parent(child))) writeUpdate(child, withParent(child, desired.name()));
         } else {
-            RouterSimpleQueue current = owned.getFirst(); requireSafe(current, iface, false);
+            RouterSimpleQueue current = owned.getFirst(); requireExactPort(current, iface, network);
             if (!same(current, desired)) writeUpdate(current, desired);
-            for (RouterSimpleQueue child : children) if (!desired.name().equals(parent(child))) { requireSafe(child, null, true); writeUpdate(child, withParent(child, desired.name())); }
+            for (RouterSimpleQueue child : children) if (!desired.name().equals(parent(child))) writeUpdate(child, withParent(child, desired.name()));
         }
     }
 
     private void removePort(RouterSnapshot snapshot, String iface) {
         List<RouterSimpleQueue> owned = ownedPort(snapshot, iface); requireUnique(owned); if (owned.isEmpty()) return;
-        RouterSimpleQueue parent = owned.getFirst(); requireSafe(parent, iface, false);
+        RouterSimpleQueue parent = owned.getFirst();
+        ManagedPort local = ports.findByInterfaceName(iface).orElseThrow(() -> error(ApiErrorCode.PORT_NOT_FOUND, HttpStatus.NOT_FOUND, "Porta não encontrada."));
+        requireExactPort(parent, iface, local.network());
         String name = parent.name();
         List<RouterSimpleQueue> allChildren = snapshot.simpleQueues().stream().filter(q -> name.equals(parent(q))).toList();
+        // Removing a hierarchy also validates all dependents before the first
+        // PATCH, avoiding a partially detached tree caused by late drift.
         for (RouterSimpleQueue child : allChildren) {
             if (!isManagedDevice(snapshot, child)) throw error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT, "Uma fila não gerenciada depende da fila da porta.");
-            requireSafe(child, null, true); writeUpdate(child, withParent(child, "none"));
+            RouterDevice childDevice = deviceForQueue(snapshot, child);
+            requireExactDevice(child, childDevice, name, child.maxLimit());
         }
+        for (RouterSimpleQueue child : allChildren) writeUpdate(child, withParent(child, "none"));
         writeDelete(parent);
     }
 
     private void setDevice(RouterSnapshot snapshot, RouterDevice device, ManagedPort port, SpeedLimit limit) {
         RouterSimpleQueue parent = singlePort(snapshot, port.interfaceName());
         String parentName = "none";
-        if (parent != null) { requireSafe(parent, port.interfaceName(), false); if (exceeds(parent.maxLimit(), limit)) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED, HttpStatus.CONFLICT, "O limite do dispositivo não pode ultrapassar o limite finito da porta."); parentName = parent.name(); }
+        if (parent != null) { requireExactPort(parent, port.interfaceName(), port.network()); if (exceeds(parent.maxLimit(), limit)) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED, HttpStatus.CONFLICT, "O limite do dispositivo não pode ultrapassar o limite finito da porta."); parentName = parent.name(); }
         ManagedSimpleQueue desired = ManagedSimpleQueue.device(device.macAddress(), device.ipAddress(), parentName, limit);
         List<RouterSimpleQueue> owned = ownedDevice(snapshot, device.macAddress()); requireUnique(owned);
         conflictForDevice(snapshot, desired, device.macAddress());
         if (owned.isEmpty()) writeCreate(desired, null);
-        else { RouterSimpleQueue current = owned.getFirst(); requireSafe(current, null, true); if (!same(current, desired)) writeUpdate(current, desired); }
+        else { RouterSimpleQueue current = owned.getFirst(); requireExactDeviceExceptTarget(current, device, parentName); if (!same(current, desired)) writeUpdate(current, desired); }
     }
 
     private void removeDevice(RouterSnapshot snapshot, String mac) {
         List<RouterSimpleQueue> owned = ownedDevice(snapshot, mac); requireUnique(owned); if (owned.isEmpty()) return;
-        RouterSimpleQueue queue = owned.getFirst(); requireSafe(queue, null, true); writeDelete(queue);
+        RouterSimpleQueue queue = owned.getFirst(); RouterDevice device = uniqueDevice(snapshot, mac);
+        String parentName = expectedExistingParent(snapshot, device);
+        requireExactDevice(queue, device, parentName, queue.maxLimit()); writeDelete(queue);
     }
 
     private void verifyPort(RouterSnapshot snapshot, String iface, String network, SpeedLimit requested) {
@@ -154,14 +169,124 @@ public final class BandwidthExecutionService {
     }
     private void verifyDevice(RouterSnapshot snapshot, String mac, String ip, SpeedLimit requested) {
         List<RouterSimpleQueue> queues = ownedDevice(snapshot, mac); if (requested.isUnlimited()) { if (!queues.isEmpty()) failVerify(); return; }
-        requireUnique(queues); if (queues.isEmpty() || !ip.concat("/32").equals(queues.getFirst().target()) || !requested.equals(queues.getFirst().maxLimit())) failVerify();
+        requireUnique(queues);
+        RouterDevice device = uniqueDevice(snapshot, mac);
+        ManagedSimpleQueue desired = ManagedSimpleQueue.device(mac, ip, expectedExistingParent(snapshot, device), requested);
+        if (queues.isEmpty() || !same(queues.getFirst(), desired)) failVerify();
+    }
+
+    /**
+     * Full preflight for an explicit PORT hierarchy operation. No caller may
+     * create the parent until every managed child is unique, exact apart from
+     * the allowed parent transition, safe, bound and below the new parent.
+     */
+    private List<RouterSimpleQueue> preflightPortHierarchy(RouterSnapshot snapshot, String iface,
+                                                           ManagedSimpleQueue parentDesired, SpeedLimit parentLimit,
+                                                           boolean creatingParent) {
+        List<RouterSimpleQueue> children = new ArrayList<>();
+        for (RouterDevice device : snapshot.devices()) {
+            if (!iface.equals(device.interfaceName())) continue;
+            List<RouterSimpleQueue> owned = ownedDevice(snapshot, device.macAddress());
+            requireUnique(owned);
+            if (owned.isEmpty()) continue;
+            RouterSimpleQueue child = owned.getFirst();
+            String currentParent = parent(child);
+            boolean parentAcceptable = "none".equals(currentParent)
+                    || (!creatingParent && parentDesired.name().equals(currentParent));
+            if (!parentAcceptable) throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "O parent atual de um filho DEVICE_QUEUE não é aceitável para esta operação explícita de hierarquia.");
+            requireBoundDevice(snapshot, device);
+            requireExactDevice(child, device, currentParent, child.maxLimit());
+            if (exceeds(parentLimit, child.maxLimit())) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED,
+                    HttpStatus.CONFLICT, "Um limite individual de dispositivo ultrapassa o novo limite da porta.");
+            children.add(child);
+        }
+        boolean foreignDependent = snapshot.simpleQueues().stream()
+                .filter(queue -> parentDesired.name().equals(parent(queue)))
+                .anyMatch(queue -> !children.contains(queue));
+        if (foreignDependent) throw error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT,
+                "Uma fila foreign ou não comprovadamente gerenciada depende da fila da porta.");
+        return List.copyOf(children);
+    }
+
+    private RouterDevice deviceForQueue(RouterSnapshot snapshot, RouterSimpleQueue queue) {
+        return snapshot.devices().stream()
+                .filter(device -> ManagedSimpleQueueSemantics.isOwnedDevice(queue, device.macAddress()))
+                .findFirst()
+                .orElseThrow(() -> error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                        "A fila DEVICE_QUEUE não possui dispositivo DHCP atual para validação."));
+    }
+
+    private void requireBoundDevice(RouterSnapshot snapshot, RouterDevice device) {
+        List<com.mikrotikmanager.domain.RouterDhcpLease> leases = snapshot.dhcpLeases().stream()
+                .filter(lease -> device.macAddress().equals(lease.macAddress()))
+                .toList();
+        if (leases.size() != 1 || !leases.getFirst().isBound() || !Objects.equals(device.ipAddress(), leases.getFirst().ipAddress())) {
+            throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "A fila DEVICE_QUEUE exige uma lease DHCP única, bound e coerente antes da alteração.");
+        }
+    }
+
+    private void requireExactPort(RouterSimpleQueue queue, String iface, String network) {
+        if (!ManagedSimpleQueueSemantics.isOwnedPort(queue, iface)
+                || !same(queue, ManagedSimpleQueue.port(iface, network, queue.maxLimit()))) {
+            throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "A Simple Queue MTMGR da porta divergiu do desired-state seguro e não será reparada automaticamente.");
+        }
+    }
+
+    /** Validates exact device shape while allowing a caller-selected target update only. */
+    private void requireExactDeviceExceptTarget(RouterSimpleQueue queue, RouterDevice device, String expectedParent) {
+        if (!ManagedSimpleQueueSemantics.isOwnedDevice(queue, device.macAddress())
+                || !ManagedSimpleQueueSemantics.isSafeManagedQueue(queue)
+                || !ManagedResourceIdentifier.expectedDeviceQueueName(device.macAddress()).equals(queue.name())
+                || !ManagedResourceIdentifier.expectedDeviceComment(device.macAddress()).equals(queue.comment())
+                || !expectedParent.equals(parent(queue))) {
+            throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "Somente TARGET_DRIFT de DEVICE_QUEUE pode ser convergido; outro drift exige correção manual.");
+        }
+        requireBoundDeviceForTargetRepair(device);
+    }
+
+    private void requireBoundDeviceForTargetRepair(RouterDevice device) {
+        if (device.ipAddress() == null || device.ipAddress().isBlank()) {
+            throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "A fila DEVICE_QUEUE não possui target DHCP atual válido.");
+        }
+    }
+
+    private void requireExactDevice(RouterSimpleQueue queue, RouterDevice device, String expectedParent, SpeedLimit limit) {
+        if (device == null || device.ipAddress() == null || !same(queue,
+                ManagedSimpleQueue.device(device.macAddress(), device.ipAddress(), expectedParent, limit))) {
+            throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT,
+                    "A Simple Queue MTMGR do dispositivo divergiu do desired-state seguro e não será reparada automaticamente.");
+        }
+    }
+
+    private String expectedExistingParent(RouterSnapshot snapshot, RouterDevice device) {
+        List<RouterSimpleQueue> parents = ownedPort(snapshot, device.interfaceName());
+        requireUnique(parents);
+        if (parents.isEmpty()) return "none";
+        RouterSimpleQueue parent = parents.getFirst();
+        ManagedPort local = ports.findByInterfaceName(device.interfaceName()).orElse(null);
+        if (local == null || !ManagedSimpleQueueSemantics.matchesDesired(parent,
+                ManagedSimpleQueue.port(device.interfaceName(), local.network(), parent.maxLimit()))) return "none";
+        return parent.name();
     }
 
     private void writeCreate(ManagedSimpleQueue desired, String anchor) { try { mutations.createManagedQueue(desired, anchor); } catch (RouterOsWriteClientException e) { recoverOrThrow(e, desired, null); } }
     private void writeUpdate(RouterSimpleQueue old, ManagedSimpleQueue desired) { if (!validId(old.id())) failVerify(); try { mutations.updateManagedQueue(old.id(), desired); } catch (RouterOsWriteClientException e) { recoverOrThrow(e, desired, old.id()); } }
     private void writeDelete(RouterSimpleQueue old) { if (!validId(old.id())) failVerify(); try { mutations.deleteManagedQueue(old.id()); } catch (RouterOsWriteClientException e) { if (e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN || e.errorType() == RouterOsWriteErrorType.NOT_FOUND) { if (snapshots.capture().simpleQueues().stream().noneMatch(q -> old.id().equals(q.id()))) return; } throw writeFailure(e); } }
     private void recoverOrThrow(RouterOsWriteClientException e, ManagedSimpleQueue desired, String id) { if (e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN) { List<RouterSimpleQueue> matches = snapshots.capture().simpleQueues().stream().filter(q -> same(q, desired)).toList(); if (matches.size() == 1) return; if (matches.size() > 1) throw error(ApiErrorCode.QUEUE_OWNERSHIP_AMBIGUOUS, HttpStatus.CONFLICT, "O resultado da escrita é ambíguo."); } throw writeFailure(e); }
-    private ApiException writeFailure(RouterOsWriteClientException e) { return error(e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN ? ApiErrorCode.QUEUE_WRITE_OUTCOME_UNKNOWN : ApiErrorCode.QUEUE_PARTIAL_APPLY, e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.BAD_GATEWAY, "A alteração de Simple Queue não pôde ser confirmada; nenhuma repetição cega foi feita."); }
+    private ApiException writeFailure(RouterOsWriteClientException e) {
+        // RouterOS has no transaction for the parent/child sequence. Refresh
+        // the observed state before reporting a failed mutation; never issue a
+        // blind rollback or advance to a later child.
+        snapshots.capture();
+        return error(e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN ? ApiErrorCode.QUEUE_WRITE_OUTCOME_UNKNOWN : ApiErrorCode.QUEUE_PARTIAL_APPLY,
+                e.errorType() == RouterOsWriteErrorType.OUTCOME_UNKNOWN ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.BAD_GATEWAY,
+                "A alteração de Simple Queue não pôde ser confirmada; nenhuma repetição cega foi feita.");
+    }
 
     private List<RouterSimpleQueue> ownedPort(RouterSnapshot s, String iface) { return s.simpleQueues().stream().filter(q -> ManagedResourceIdentifier.isOwnedByPort(q.comment(), iface)).toList(); }
     private List<RouterSimpleQueue> ownedDevice(RouterSnapshot s, String mac) { return s.simpleQueues().stream().filter(q -> ManagedResourceIdentifier.isOwnedByDevice(q.comment(), mac)).toList(); }

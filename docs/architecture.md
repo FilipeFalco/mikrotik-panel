@@ -12,6 +12,10 @@ Physical Phase 4 write validation: NOT RUN
 
 A Fase 5 usa `RouterOsQueueWriteClient` separado, lock global `ROUTEROS:SIMPLE_QUEUE` e capability independente de banda.
 
+Para banda, o planner e o executor compartilham `ManagedSimpleQueue`: `name`, comentário de ownership, target, parent, max-limit e shape semântico seguro são o desired-state completo. Portanto `freshPlan.changeRequired=false` encerra a operação sem mutação. A única reconciliação contextual permitida é `TARGET_DRIFT` de DEVICE_QUEUE por mudança de lease DHCP, exclusivamente em `SET_DEVICE_SPEED`, com lease bound e todos os demais campos exatos. Parent/name/semantic drift continuam bloqueantes.
+
+Operações de hierarquia não são transacionais no RouterOS. O executor valida todos os children antes do primeiro `PUT` do parent; em falha intermediária ele faz uma nova leitura e não executa rollback cego. `queue` é tratado como par upload/download, enquanto `total-queue` é um tipo único; campos desconhecidos permanecem fail-closed.
+
 ## Fronteiras de confiança
 
 ```text

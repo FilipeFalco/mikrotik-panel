@@ -15,7 +15,7 @@ it('keeps invalid Mbps input from invoking the save operation', () => {
   render(<PortDetail port={port} saving={false} onSaveSpeed={onSaveSpeed} onDeviceSelect={vi.fn()} onBack={vi.fn()} />);
 
   fireEvent.change(screen.getByLabelText('Limite de download em Mbps'), { target: { value: '10O' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Salvar limite' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Alterar limite' }));
 
   expect(screen.getByRole('alert')).toHaveTextContent('Informe um valor em Mbps válido.');
   expect(onSaveSpeed).not.toHaveBeenCalled();
@@ -27,7 +27,7 @@ it('treats an empty Mbps field as an explicit unlimited limit', () => {
 
   fireEvent.change(screen.getByLabelText('Limite de download em Mbps'), { target: { value: '' } });
   fireEvent.change(screen.getByLabelText('Limite de upload em Mbps'), { target: { value: '' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Salvar limite' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Alterar limite' }));
 
   expect(onSaveSpeed).toHaveBeenCalledWith(port, 0, 0);
 });
@@ -38,8 +38,8 @@ it('disables RouterOS speed controls without disabling the local configuration f
 
   expect(screen.getByLabelText('Limite de download em Mbps')).toBeDisabled();
   expect(screen.getByLabelText('Limite de upload em Mbps')).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Salvar limite' })).toBeDisabled();
-  expect(screen.getByText('Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Alterar limite' })).toBeDisabled();
+  expect(screen.getByTitle('Disponível apenas quando a escrita RouterOS for habilitada em uma fase futura.')).toBeInTheDocument();
 });
 
 it('keeps the real speed save disabled while allowing a dry-run preview', () => {
@@ -49,5 +49,5 @@ it('keeps the real speed save disabled while allowing a dry-run preview', () => 
   fireEvent.click(screen.getByRole('button', { name: 'Visualizar plano' }));
 
   expect(onPreviewSpeed).toHaveBeenCalledWith(port, 100_000_000, 20_000_000);
-  expect(screen.getByRole('button', { name: 'Salvar limite' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Alterar limite' })).toBeDisabled();
 });

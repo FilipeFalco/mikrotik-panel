@@ -6,6 +6,8 @@ import com.mikrotikmanager.domain.BlockingStrategy;
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
 import com.mikrotikmanager.domain.ManagedDeviceBlockRule;
+import com.mikrotikmanager.domain.ManagedSimpleQueue;
+import com.mikrotikmanager.domain.ManagedSimpleQueueSemantics;
 import com.mikrotikmanager.domain.OperationIntent;
 import com.mikrotikmanager.domain.OperationPlan;
 import com.mikrotikmanager.domain.PlanChange;
@@ -237,11 +239,15 @@ public class OperationPlanningService {
         addLimitPrecondition(intent.requestedLimit(), requestedLimitValid, preconditions);
         addQueueReconciliationFindings(port, preconditions, warnings, conflicts);
         addChildLimitPrecondition(port, intent.requestedLimit(), requestedLimitValid, snapshot.devices(), preconditions);
+        addPortHierarchyPreconditions(port, intent.requestedLimit(), requestedLimitValid, snapshot, preconditions, conflicts);
         addFastTrackWarning(snapshot, preconditions, warnings);
 
         SpeedLimit currentLimit = port.observedQueue() == null ? null : port.observedQueue().maxLimit();
+        ManagedSimpleQueue desired = port.localPort() == null || !requestedLimitValid ? null
+                : ManagedSimpleQueue.port(port.interfaceName(), port.localPort().network(), intent.requestedLimit());
+        boolean exactDesired = desired != null && ManagedSimpleQueueSemantics.matchesDesired(port.observedQueue(), desired);
         boolean changeRequired = requestedLimitValid && port.routerInterface() != null
-                && !Objects.equals(currentLimit, intent.requestedLimit());
+                && (intent.requestedLimit().isUnlimited() ? port.observedQueue() != null : !exactDesired);
         List<PlanChange> changes = portSpeedChanges(port, requestedLimitValid, changeRequired, conflicts);
         return build(intent, snapshot, port.target(), port.currentState(currentLimit),
                 port.desiredState(intent.requestedLimit()), port.ownership(), preconditions, warnings, conflicts, changes, changeRequired);
@@ -259,14 +265,19 @@ public class OperationPlanningService {
         PortContext parentPort = resolvePort(device.interfaceName(), snapshot, reconciliation, localPorts);
         addPortPreconditions(parentPort, preconditions);
         addQueueReconciliationFindings(parentPort, preconditions, warnings, conflicts);
-        addQueueReconciliationFindings(device.deviceQueueResource(), preconditions, warnings, conflicts);
+        String expectedParent = expectedDeviceParent(parentPort);
+        ManagedSimpleQueue desired = device.ipAddress() == null || !requestedLimitValid ? null
+                : ManagedSimpleQueue.device(device.normalizedMac(), device.ipAddress(), expectedParent, intent.requestedLimit());
+        boolean targetDriftRepairable = isRepairableDeviceQueueTargetDrift(device, desired, requestedLimitValid);
+        addDeviceQueueReconciliationFindings(device.deviceQueueResource(), targetDriftRepairable, preconditions, warnings, conflicts);
         addDeviceParentLimitPrecondition(parentPort, intent.requestedLimit(), requestedLimitValid, preconditions);
         addFastTrackWarning(snapshot, preconditions, warnings);
 
         // Bandwidth ownership and observed speed are derived solely from the exact DEVICE_QUEUE.
         SpeedLimit currentLimit = device.deviceQueue() == null ? SpeedLimit.UNLIMITED : device.deviceQueue().maxLimit();
+        boolean exactDesired = desired != null && ManagedSimpleQueueSemantics.matchesDesired(device.deviceQueue(), desired);
         boolean changeRequired = requestedLimitValid && device.hasUsableDevice()
-                && !Objects.equals(currentLimit, intent.requestedLimit());
+                && (intent.requestedLimit().isUnlimited() ? device.deviceQueue() != null : !exactDesired);
         if (changeRequired && currentLimit != null && !currentLimit.isUnlimited()
                 && device.deviceQueueOwnership() != ResourceOwnership.MANAGED) {
             conflicts.add(new PlanConflict("UNOWNED_DEVICE_LIMIT", "DEVICE_QUEUE", device.target().displayName(),
@@ -562,6 +573,24 @@ public class OperationPlanningService {
 
     private void addQueueReconciliationFindings(ReconciliationResource resource, List<PlanPrecondition> preconditions,
                                                 List<PlanWarning> warnings, List<PlanConflict> conflicts) {
+        addQueueReconciliationFindings(resource, false, preconditions, warnings, conflicts);
+    }
+
+    /** TARGET_DRIFT is visible diagnostically, but may be repaired only by an explicit device speed operation. */
+    private void addDeviceQueueReconciliationFindings(ReconciliationResource resource, boolean targetDriftRepairable,
+                                                       List<PlanPrecondition> preconditions, List<PlanWarning> warnings,
+                                                       List<PlanConflict> conflicts) {
+        addQueueReconciliationFindings(resource, targetDriftRepairable, preconditions, warnings, conflicts);
+        if (targetDriftRepairable) {
+            preconditions.add(new PlanPrecondition("TARGET_DRIFT_REPAIRABLE",
+                    "O único drift da fila de dispositivo é o target da lease DHCP bound atual; SET_DEVICE_SPEED pode convergi-lo.",
+                    true, PlanSeverity.INFO));
+        }
+    }
+
+    private void addQueueReconciliationFindings(ReconciliationResource resource, boolean ignoreRepairableTargetDrift,
+                                                List<PlanPrecondition> preconditions, List<PlanWarning> warnings,
+                                                List<PlanConflict> conflicts) {
         boolean available = resource != null;
         preconditions.add(new PlanPrecondition("QUEUE_RECONCILIATION_AVAILABLE",
                 "A fila futura da porta foi analisada a partir do mesmo snapshot.", available, PlanSeverity.BLOCKING));
@@ -581,6 +610,9 @@ public class OperationPlanningService {
                 PlanSeverity.BLOCKING));
 
         for (ReconciliationFinding finding : resource.findings()) {
+            if (ignoreRepairableTargetDrift && "TARGET_DRIFT".equals(finding.code())) {
+                continue;
+            }
             if (finding.severity() == PlanSeverity.BLOCKING) {
                 preconditions.add(new PlanPrecondition(finding.code(), finding.description(), false, PlanSeverity.BLOCKING));
             } else {
@@ -592,6 +624,32 @@ public class OperationPlanningService {
                     valueOr(resource.observedName(), resource.displayName()), resource.observedTarget(), resource.ownership(),
                     conflictDescription(resource), PlanSeverity.BLOCKING));
         }
+    }
+
+    /** A child inherits a parent only when the observed PORT_QUEUE is exact and safe. */
+    private String expectedDeviceParent(PortContext parentPort) {
+        if (parentPort.localPort() == null || parentPort.observedQueue() == null) return "none";
+        RouterSimpleQueue observed = parentPort.observedQueue();
+        ManagedSimpleQueue desired = ManagedSimpleQueue.port(parentPort.interfaceName(), parentPort.localPort().network(), observed.maxLimit());
+        return ManagedSimpleQueueSemantics.matchesDesired(observed, desired) ? desired.name() : "none";
+    }
+
+    private boolean isRepairableDeviceQueueTargetDrift(DeviceContext device, ManagedSimpleQueue desired,
+                                                        boolean requestedLimitValid) {
+        RouterSimpleQueue observed = device.deviceQueue();
+        ReconciliationResource resource = device.deviceQueueResource();
+        if (!requestedLimitValid || desired == null || !device.hasUsableDevice() || observed == null || resource == null
+                || resource.ownership() != ResourceOwnership.MANAGED
+                || resource.status() == ReconciliationStatus.CONFLICT
+                || resource.status() == ReconciliationStatus.AMBIGUOUS_OWNERSHIP
+                || desired.target().equals(observed.target())) return false;
+        // Semantic safety (including unknown fields) plus name/comment/parent
+        // exactness leaves target as the sole permitted contextual difference.
+        return ManagedSimpleQueueSemantics.isOwnedDevice(observed, device.normalizedMac())
+                && ManagedSimpleQueueSemantics.isSafeManagedQueue(observed)
+                && desired.name().equals(observed.name())
+                && desired.comment().equals(observed.comment())
+                && desired.parent().equals(ManagedSimpleQueueSemantics.parent(observed));
     }
 
     private String conflictDescription(ReconciliationResource resource) {
@@ -619,6 +677,76 @@ public class OperationPlanningService {
                         ? "Todos os limites de dispositivos observados cabem no limite solicitado para a porta."
                         : "Um ou mais limites de dispositivos observados ultrapassam o limite solicitado para a porta.",
                 exceeding.isEmpty(), PlanSeverity.BLOCKING));
+    }
+
+    /**
+     * Parent creation/reparenting is a hierarchy operation, not a collection
+     * of independently safe writes. Validate every candidate before the
+     * executor is allowed to create the parent.
+     */
+    private void addPortHierarchyPreconditions(PortContext port, SpeedLimit requested, boolean requestedValid,
+                                               RouterSnapshot snapshot, List<PlanPrecondition> preconditions,
+                                               List<PlanConflict> conflicts) {
+        if (!requestedValid || requested.isUnlimited() || port.interfaceName() == null) {
+            return;
+        }
+        String parentName = ManagedResourceIdentifier.expectedPortQueueName(port.interfaceName());
+        boolean parentAlreadyExists = port.observedQueue() != null;
+        List<RouterSimpleQueue> children = new ArrayList<>();
+        String failureCode = null;
+        for (RouterDevice device : snapshot.devices()) {
+            if (!port.interfaceName().equals(device.interfaceName())) continue;
+            List<RouterSimpleQueue> owned = snapshot.simpleQueues().stream()
+                    .filter(queue -> ManagedSimpleQueueSemantics.isOwnedDevice(queue, device.macAddress())).toList();
+            if (owned.size() > 1) {
+                failureCode = "QUEUE_OWNERSHIP_AMBIGUOUS";
+                break;
+            }
+            if (owned.isEmpty()) continue;
+            RouterSimpleQueue child = owned.getFirst();
+            children.add(child);
+            if (blank(device.ipAddress())) {
+                failureCode = "MANAGED_QUEUE_DRIFT";
+                break;
+            }
+            String observedParent = ManagedSimpleQueueSemantics.parent(child);
+            boolean parentAcceptable = "none".equals(observedParent)
+                    || (parentAlreadyExists && parentName.equals(observedParent));
+            ManagedSimpleQueue exactCurrent = ManagedSimpleQueue.device(device.macAddress(), device.ipAddress(),
+                    observedParent, child.maxLimit());
+            if (!parentAcceptable || !ManagedSimpleQueueSemantics.matchesDesired(child, exactCurrent)
+                    || !hasUniqueBoundLease(snapshot, device.macAddress(), device.ipAddress())) {
+                failureCode = "MANAGED_QUEUE_DRIFT";
+                break;
+            }
+            if (exceeds(requested, child.maxLimit())) {
+                failureCode = "QUEUE_PARENT_LIMIT_EXCEEDED";
+                break;
+            }
+        }
+        if (failureCode == null) {
+            boolean foreignDependent = snapshot.simpleQueues().stream()
+                    .filter(queue -> parentName.equals(ManagedSimpleQueueSemantics.parent(queue)))
+                    .anyMatch(queue -> !children.contains(queue));
+            if (foreignDependent) failureCode = "QUEUE_FOREIGN_CONFLICT";
+        }
+        boolean safe = failureCode == null;
+        preconditions.add(new PlanPrecondition("PORT_HIERARCHY_CHILDREN_SAFE",
+                safe ? "Todos os filhos DEVICE_QUEUE candidatos passaram pelo preflight antes de qualquer criação/reparenting do pai."
+                        : "Ao menos um filho DEVICE_QUEUE ou dependente do parent não pode ser validado com segurança.",
+                safe, PlanSeverity.BLOCKING));
+        if (!safe) {
+            conflicts.add(new PlanConflict(failureCode, "PORT_QUEUE", parentName, port.localPort() == null ? null : port.localPort().network(),
+                    ResourceOwnership.MANAGED,
+                    "A hierarquia de Simple Queue não passou no preflight completo; nenhum parent ou child será alterado.",
+                    PlanSeverity.BLOCKING));
+        }
+    }
+
+    private boolean hasUniqueBoundLease(RouterSnapshot snapshot, String mac, String expectedIp) {
+        List<RouterDhcpLease> leases = snapshot.dhcpLeases().stream()
+                .filter(lease -> mac.equals(normalizeMac(lease.macAddress()))).toList();
+        return leases.size() == 1 && leases.getFirst().isBound() && Objects.equals(expectedIp, leases.getFirst().ipAddress());
     }
 
     private void addDeviceParentLimitPrecondition(PortContext parent, SpeedLimit requested, boolean requestedValid,
@@ -675,7 +803,7 @@ public class OperationPlanningService {
         }
         if (!changeRequired) {
             return List.of(new PlanChange("NO_CHANGE", "SIMPLE_QUEUE",
-                    "O max-limit observado já corresponde ao limite solicitado; nenhuma alteração RouterOS será enviada."));
+                    "A Simple Queue observada já corresponde ao desired-state completo; nenhuma alteração RouterOS será enviada."));
         }
         if (!conflicts.isEmpty()) {
             return List.of(new PlanChange("NO_ACTION", "SIMPLE_QUEUE",
@@ -697,7 +825,7 @@ public class OperationPlanningService {
         }
         if (!changeRequired) {
             return List.of(new PlanChange("NO_CHANGE", "DEVICE_SPEED",
-                    "O limite observado já corresponde ao limite solicitado; nenhuma alteração RouterOS será enviada."));
+                    "A Simple Queue observada já corresponde ao desired-state completo; nenhuma alteração RouterOS será enviada."));
         }
         if (!conflicts.isEmpty()) {
             return List.of(new PlanChange("NO_ACTION", "DEVICE_SPEED",

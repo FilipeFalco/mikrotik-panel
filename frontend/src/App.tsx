@@ -272,6 +272,7 @@ export default function App() {
   );
   const bandwidthExecutionEnabled = Boolean(systemStatus?.connected
     && (systemStatus.bandwidthExecutionEnabled ?? !routerControlsReadOnly));
+  const anyRestrictedWriteEnabled = deviceBlockExecutionEnabled || bandwidthExecutionEnabled;
 
   const savePortConfiguration = async (
     interfaceName: string,
@@ -396,7 +397,7 @@ export default function App() {
   const routerConnectionLabel = systemStatus?.mockMode
     ? 'Dados simulados'
     : systemStatus?.connected
-      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? deviceBlockExecutionEnabled ? ' · Escrita restrita' : ' · Somente leitura' : ''}`
+      ? `RouterOS ${systemStatus.routerOsVersion ?? 'conectado'}${systemStatus.readOnly ? anyRestrictedWriteEnabled ? ' · Escrita restrita' : ' · Somente leitura' : ''}`
       : 'RouterOS';
 
   const content = () => {
@@ -420,7 +421,13 @@ export default function App() {
       <main className="main-content">
         <header className="topbar"><div><span className="topbar-title">MikroTik Local Manager</span><small>{routerConnectionLabel}</small></div><StatusBadge status={systemStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'} /></header>
         {error && <section className="notice error" role="alert"><div><strong>Não foi possível concluir a ação.</strong><span>{error}</span></div><button type="button" className="button secondary compact" onClick={retryConnection}>Tentar novamente</button></section>}
-        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>{deviceBlockExecutionEnabled ? 'RouterOS com escrita restrita.' : 'RouterOS em modo somente leitura.'}</strong><span>{deviceBlockExecutionEnabled ? 'A aplicação pode criar/remover somente regras MTMGR de bloqueio de dispositivos. Demais operações RouterOS continuam indisponíveis.' : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
+        {systemStatus && !systemStatus.mockMode && systemStatus.readOnly && <section className="notice info"><strong>{anyRestrictedWriteEnabled ? 'RouterOS com escrita restrita.' : 'RouterOS em modo somente leitura.'}</strong><span>{anyRestrictedWriteEnabled
+          ? deviceBlockExecutionEnabled && bandwidthExecutionEnabled
+            ? 'Bloqueio/liberação e controle de banda habilitados. Demais operações RouterOS continuam indisponíveis.'
+            : deviceBlockExecutionEnabled
+              ? 'Bloqueio/liberação habilitados. Demais operações RouterOS continuam indisponíveis.'
+              : 'Controle de banda via Simple Queue habilitado. Demais operações RouterOS continuam indisponíveis.'
+          : 'Configurações e metadata locais continuam disponíveis; nenhuma alteração é enviada ao roteador.'}</span></section>}
         {systemStatus?.fastTrackDetected && <section className="notice warning"><strong>⚠ FastTrack detectado</strong><span>FastTrack ativo impede a aplicação segura de limites por Simple Queue nesta fase. Bloqueio por MAC continua independente; nenhuma regra será alterada automaticamente.</span></section>}
         {content()}
       </main>

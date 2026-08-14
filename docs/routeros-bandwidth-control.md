@@ -24,12 +24,18 @@ Não há declaração oficial atual suficientemente inequívoca para serializar 
 - `total-limit-at`, `total-max-limit`, `total-priority`, `total-queue`, `total-burst-*` e `total-bucket-size` são modelados. Fora do valor default/unset, bloqueiam a gestão; a Fase 5 não tenta removê-los por PATCH.
 - Bandwidth ownership is derived from the exact DEVICE_QUEUE comment, not from DHCP lease comments.
 - Um target de device que divergiu da lease atual é drift. Só uma solicitação explícita de speed pode atualizá-lo, com ownership único, shape seguro, lease bound atual e sem conflito foreign.
+- O desired-state é completo. `PORT_QUEUE` compara `name`, `comment`, `target=<network>`, `parent=none`, `max-limit` e o shape semântico seguro. `DEVICE_QUEUE` compara os mesmos campos, com `target=<lease bound>/32` e `parent` igual ao PORT_QUEUE somente se este parent já for válido; caso contrário `none`.
+- Assim, `freshPlan.changeRequired=false` implica **zero mutações RouterOS**. O executor retorna o read model antes de qualquer `PUT`, `PATCH` ou `DELETE`; ele nunca transforma um preview `NO_CHANGE` em reparo contextual.
+- `QUEUE_NAME_DRIFT`, `QUEUE_PARENT_DRIFT`, semantic drift e target drift de PORT_QUEUE são bloqueantes e não são corrigidos automaticamente. Para DEVICE_QUEUE, `TARGET_DRIFT` é a única exceção contextual: `SET_DEVICE_SPEED` pode convergir somente o target, e somente quando todos os demais campos e a lease atual forem seguros.
+- `queue` é um par upload/download (`default-small/default-small` ou outro par explicitamente aceito); `total-queue` é um tipo único (`default-small`). Um par em `total-queue`, queue type customizado ou campo RouterOS desconhecido continua sendo drift fail-closed.
 
 ## Fluxo operacional
 
-Cada execução toma o lock global `ROUTEROS:SIMPLE_QUEUE`, valida flags e credenciais separadas e executa exatamente: `fresh snapshot → OperationPlanningService.planFromSnapshot(intent, snapshot) → validate → mutate → fresh snapshot → verify`. Preview, fingerprint, `.id`, ownership e `ready` vindos do navegador nunca autorizam escrita. Ao criar parent, ele é criado antes de reparentar filhos. Ao remover parent, filhos MTMGR seguros são reparentados para `none` antes do DELETE.
+Cada execução toma o lock global `ROUTEROS:SIMPLE_QUEUE`, valida flags e credenciais separadas e executa exatamente: `fresh snapshot → OperationPlanningService.planFromSnapshot(intent, snapshot) → validate → mutate → fresh snapshot → verify`. Preview, fingerprint, `.id`, ownership e `ready` vindos do navegador nunca autorizam escrita. Antes de criar um parent, **todos** os DEVICE_QUEUE children candidatos são validados quanto a ownership único, name/target/shape seguro, lease bound, parent aceitável, conflito foreign e limite individual; só então ocorre `PUT parent → PATCH children`. Ao remover parent, filhos MTMGR seguros são reparentados para `none` antes do DELETE.
 
 RouterOS não oferece transação para a sequência. Em falha parcial ou outcome desconhecido, o painel relê e reconcilia; não faz rollback ou retry cego. PUT/PATCH/DELETE só são considerados recuperados quando a leitura confirma o estado desejado (ou ausência, no DELETE).
+
+Os testes incluem executor real com dependências mockadas e fluxo HTTP stateful `MockMvc → controller → executor → planner → RouterOsQueueWriteClient → FakeRouterOsServer`, cobrindo create/update/no-op/remove, hierarchy e `TARGET_DRIFT` sem mockar o gateway de mutação.
 
 ## Flags
 

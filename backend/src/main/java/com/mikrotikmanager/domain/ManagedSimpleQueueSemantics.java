@@ -12,8 +12,8 @@ public final class ManagedSimpleQueueSemantics {
     public static boolean isSafeManagedQueue(RouterSimpleQueue q) {
         return q != null && !q.disabled() && !q.dynamic() && !q.invalid() && q.maxLimit() != null
                 && inactive(q.limitAt()) && inactive(q.burstLimit()) && inactive(q.burstThreshold()) && inactive(q.burstTime()) && inactive(q.time()) && inactive(q.packetMarks()) && inactive(q.dstAddress())
-                && bucketDefault(q.bucketSize()) && queueDefault(q.queue()) && priorityDefault(q.priority())
-                && inactive(q.totalLimitAt()) && inactive(q.totalMaxLimit()) && priorityDefault(q.totalPriority()) && queueDefault(q.totalQueue())
+                && bucketDefault(q.bucketSize()) && queuePairDefault(q.queue()) && priorityDefault(q.priority())
+                && inactive(q.totalLimitAt()) && inactive(q.totalMaxLimit()) && priorityDefault(q.totalPriority()) && totalQueueDefault(q.totalQueue())
                 && inactive(q.totalBurstLimit()) && inactive(q.totalBurstThreshold()) && inactive(q.totalBurstTime()) && bucketDefault(q.totalBucketSize())
                 && q.unknownFields().stream().allMatch(SAFE_UNKNOWN_OPERATIONAL_FIELDS::contains);
     }
@@ -21,6 +21,15 @@ public final class ManagedSimpleQueueSemantics {
     public static String parent(RouterSimpleQueue q) { return q.parent() == null || q.parent().isBlank() ? "none" : q.parent(); }
     private static boolean inactive(String v) { return v == null || v.isBlank() || "0".equals(v) || "0/0".equals(v) || "0s/0s".equals(v); }
     private static boolean bucketDefault(String v) { return v == null || v.isBlank() || "0.1".equals(v) || "0.1/0.1".equals(v); }
-    private static boolean queueDefault(String v) { return v == null || v.isBlank() || "default/default".equals(v) || "default-small/default-small".equals(v); }
+    /**
+     * The Simple Queue {@code queue} property is a direction pair: RouterOS
+     * reports upload/download queue types separated by '/'. We accept only
+     * the stock pairs Phase 5 deliberately creates/observes, plus an omitted
+     * field from older RouterOS REST payloads.
+     */
+    static boolean queuePairDefault(String v) { return v == null || v.isBlank() || "default/default".equals(v) || "default-small/default-small".equals(v); }
+
+    /** {@code total-queue} is a single queue type, never a direction pair. */
+    static boolean totalQueueDefault(String v) { return v == null || v.isBlank() || "default".equals(v) || "default-small".equals(v); }
     private static boolean priorityDefault(String v) { return v == null || v.isBlank() || "8".equals(v) || "8/8".equals(v); }
 }

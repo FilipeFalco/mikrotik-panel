@@ -47,7 +47,7 @@ it('shows readiness, reconciliation statuses and foreign conflict without an aut
   render(<Settings systemStatus={systemStatus} diagnostics={null} readiness={readiness} reconciliation={reconciliation} ports={[port]} testing={false} saving={false} onTestConnection={vi.fn()} onAnalyzeRouterOS={onAnalyzeRouterOS} onSavePort={async () => port} />);
 
   expect(screen.getByRole('heading', { name: 'Preparação para futuras alterações' })).toBeInTheDocument();
-  expect(screen.getByText('Write flag:')).toBeInTheDocument();
+  expect(screen.getByText('Global write flag:')).toBeInTheDocument();
   expect(screen.getAllByText('Desabilitada')).toHaveLength(3);
   expect(screen.getByText('CONFLICT')).toBeInTheDocument();
   expect(screen.getByText('FOREIGN_QUEUE_CONFLICT')).toBeInTheDocument();

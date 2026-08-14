@@ -59,9 +59,36 @@ class MikrotikWriteGuardTest {
                 .doesNotThrowAnyException();
     }
 
+    @Test
+    void bandwidthRequiresTheGlobalFlagTheBandwidthFlagAndSeparateCredentials() {
+        assertThatThrownBy(() -> new MikrotikWriteGuard(bandwidthProperties(false, true, "write-user", "write-password"))
+                .checkBandwidthWriteAllowed())
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.MIKROTIK_WRITES_DISABLED);
+
+        assertThatThrownBy(() -> new MikrotikWriteGuard(bandwidthProperties(true, false, "write-user", "write-password"))
+                .checkBandwidthWriteAllowed())
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.BANDWIDTH_WRITES_DISABLED);
+
+        assertThatThrownBy(() -> new MikrotikWriteGuard(bandwidthProperties(true, true, null, null))
+                .checkBandwidthWriteAllowed())
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).code())
+                .isEqualTo(ApiErrorCode.MIKROTIK_WRITE_CREDENTIALS_MISSING);
+    }
+
     private MikrotikProperties properties(boolean global, boolean deviceBlock,
                                           String writeUsername, String writePassword) {
         return new MikrotikProperties("router", 443, "read-user", "read-password",
                 writeUsername, writePassword, true, false, global, deviceBlock, 500, 1_000);
+    }
+
+    private MikrotikProperties bandwidthProperties(boolean global, boolean bandwidth,
+                                                    String writeUsername, String writePassword) {
+        return new MikrotikProperties("router", 443, "read-user", "read-password", writeUsername, writePassword,
+                true, false, global, false, bandwidth, 500, 1_000);
     }
 }

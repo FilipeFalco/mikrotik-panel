@@ -60,8 +60,8 @@ it('executes block state with only the MAC in the URL and no plan or RouterOS pa
 
   expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block', expect.objectContaining({ method: 'POST' }));
   expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/devices/AA%3ABB%3ACC%3ADD%3AEE%3A01/block', expect.objectContaining({ method: 'DELETE' }));
-  for (const [, init] of fetchMock.mock.calls) {
-    expect((init as RequestInit).body).toBeUndefined();
+  for (const [, init] of fetchMock.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit | undefined]>) {
+    expect(init?.body).toBeUndefined();
     expect(JSON.stringify(init)).not.toMatch(/plan|fingerprint|ownership|\.id|routeros/i);
   }
 });

@@ -2,6 +2,7 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
+import com.mikrotikmanager.domain.ManagedSimpleQueue;
 import com.mikrotikmanager.domain.ManagedSimpleQueueSemantics;
 import com.mikrotikmanager.domain.PlanSeverity;
 import com.mikrotikmanager.domain.ReconciliationFinding;
@@ -58,12 +59,13 @@ public class ReconciliationService {
 
     public ReconciliationReport analyze(RouterSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
-        List<ReconciliationResource> resources = new ArrayList<>(managedPortRepository.findAll().stream()
+        List<ManagedPort> managedPorts = managedPortRepository.findAll();
+        List<ReconciliationResource> resources = new ArrayList<>(managedPorts.stream()
                 .sorted(Comparator.comparing(ManagedPort::interfaceName))
                 .map(port -> reconcilePortQueue(port, snapshot.simpleQueues()))
                 .toList());
         snapshot.devices().stream().sorted(Comparator.comparing(RouterDevice::macAddress))
-                .forEach(device -> resources.add(reconcileDeviceQueue(device, snapshot.simpleQueues())));
+                .forEach(device -> resources.add(reconcileDeviceQueue(device, snapshot.simpleQueues(), managedPorts)));
         ReconciliationSummary summary = summarize(resources);
         log.info("Reconciliation completed managed={} conflicts={} drifted={} missing={}",
                 summary.managed(), summary.conflicts(), summary.drifted(), summary.missing());
@@ -128,6 +130,10 @@ public class ReconciliationService {
             drift.add(new ReconciliationFinding("QUEUE_TARGET_DRIFT", "O target observado diverge do CIDR local da porta.",
                     PlanSeverity.BLOCKING));
         }
+        if (!"none".equals(ManagedSimpleQueueSemantics.parent(queue))) {
+            drift.add(new ReconciliationFinding("QUEUE_PARENT_DRIFT",
+                    "A fila da porta deve ser uma Simple Queue raiz, sem parent configurado.", PlanSeverity.BLOCKING));
+        }
         if (queue.disabled()) {
             drift.add(new ReconciliationFinding("QUEUE_DISABLED", "A Simple Queue gerenciada está desabilitada.", PlanSeverity.WARNING));
         }
@@ -145,7 +151,8 @@ public class ReconciliationService {
                 ResourceOwnership.MANAGED, status, expectedName, port.network(), queue.name(), queue.target(), false, drift);
     }
 
-    private ReconciliationResource reconcileDeviceQueue(RouterDevice device, List<RouterSimpleQueue> queues) {
+    private ReconciliationResource reconcileDeviceQueue(RouterDevice device, List<RouterSimpleQueue> queues,
+                                                        List<ManagedPort> managedPorts) {
         String mac = device.macAddress(); String expectedName = ManagedResourceIdentifier.expectedDeviceQueueName(mac);
         List<RouterSimpleQueue> owned = queues.stream().filter(q -> ManagedResourceIdentifier.isOwnedByDevice(q.comment(), mac)).toList();
         List<RouterSimpleQueue> conflicts = queues.stream().filter(q -> !ManagedResourceIdentifier.isOwnedByDevice(q.comment(), mac))
@@ -157,8 +164,32 @@ public class ReconciliationService {
         RouterSimpleQueue queue = owned.getFirst(); List<ReconciliationFinding> drift = new ArrayList<>();
         if (!expectedName.equals(queue.name())) drift.add(new ReconciliationFinding("QUEUE_NAME_DRIFT", "Nome determinístico inesperado.", PlanSeverity.BLOCKING));
         if (device.ipAddress() == null || !(device.ipAddress() + "/32").equals(queue.target())) drift.add(new ReconciliationFinding("TARGET_DRIFT", "O target da fila diverge da lease DHCP atual.", PlanSeverity.BLOCKING));
+        String expectedParent = expectedDeviceParent(device, queues, managedPorts);
+        if (!expectedParent.equals(ManagedSimpleQueueSemantics.parent(queue))) {
+            drift.add(new ReconciliationFinding("QUEUE_PARENT_DRIFT",
+                    "O parent observado diverge da hierarquia Simple Queue segura para a porta atual do dispositivo.",
+                    PlanSeverity.BLOCKING));
+        }
         addQueueSemanticDrift(queue, drift);
         return new ReconciliationResource("DEVICE_QUEUE", mac, "Queue do dispositivo " + mac, ResourceOwnership.MANAGED, drift.isEmpty() ? ReconciliationStatus.IN_SYNC : ReconciliationStatus.DRIFTED, expectedName, device.ipAddress() == null ? null : device.ipAddress() + "/32", queue.name(), queue.target(), false, drift);
+    }
+
+    /** A device inherits a parent only from an already exact, safe PORT_QUEUE. */
+    private String expectedDeviceParent(RouterDevice device, List<RouterSimpleQueue> queues,
+                                        List<ManagedPort> managedPorts) {
+        ManagedPort port = managedPorts.stream()
+                .filter(candidate -> candidate.interfaceName().equals(device.interfaceName()))
+                .filter(candidate -> candidate.enabled() && candidate.role() == ManagedPortRole.CLIENT)
+                .filter(candidate -> CidrValidator.isValid(candidate.network()))
+                .findFirst().orElse(null);
+        if (port == null) return "none";
+        List<RouterSimpleQueue> parents = queues.stream()
+                .filter(queue -> ManagedSimpleQueueSemantics.isOwnedPort(queue, port.interfaceName()))
+                .toList();
+        if (parents.size() != 1) return "none";
+        RouterSimpleQueue parent = parents.getFirst();
+        ManagedSimpleQueue desired = ManagedSimpleQueue.port(port.interfaceName(), port.network(), parent.maxLimit());
+        return ManagedSimpleQueueSemantics.matchesDesired(parent, desired) ? desired.name() : "none";
     }
     private ReconciliationResource resource(String type, String key, String expectedName, String ip, ResourceOwnership ownership, ReconciliationStatus status, RouterSimpleQueue observed, boolean conflict, String code, String description, PlanSeverity severity) {
         return new ReconciliationResource(type, key, "Queue " + key, ownership, status, expectedName, ip == null ? null : ip + "/32", observed.name(), observed.target(), conflict, List.of(new ReconciliationFinding(code, description, severity)));
