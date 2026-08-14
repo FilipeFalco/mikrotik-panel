@@ -10,7 +10,7 @@ ownership, conflito, shape e ordem antes da mutação.
 
 Physical Phase 4 write validation: NOT RUN
 
-A Fase 5 possui readiness de banda separada: Simple Queue legível, ownership/conflitos e FastTrack fazem parte do preflight.
+A Fase 5 possui readiness de banda separada: Simple Queue legível, ownership/conflitos e FastTrack fazem parte do preflight. A execução sempre faz `fresh snapshot → planFromSnapshot → validação → mutação → verificação`; nenhum preview é autorização.
 
 ## Estratégia única
 

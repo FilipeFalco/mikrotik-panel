@@ -20,12 +20,14 @@ Não há declaração oficial atual suficientemente inequívoca para serializar 
 - Dispositivo: `mtmgr-device-<MAC sem separadores>`, `target=<ip>/32`, `comment=MTMGR:DEVICE:<MAC com hífens>`, `parent=<queue da porta>` quando ela existe.
 - O comentário exato é a única prova de ownership. Nome, target, IP, parent, limite, ordem e `.id` nunca adotam uma fila.
 - Colisão de nome, ownership duplicado, `dynamic=true`, fila foreign sobreposta, target inesperado, `packet-marks`, `time`, `limit-at`, burst, `dst-address`, queue type/priority/bucket não padrão ou campo semântico inseguro bloqueiam PATCH/DELETE.
-- Counters (`bytes`, `packets`, `rate`, `queued-*`, `dropped`) não são drift.
+- Counters documentados como read-only (`bytes`, `packets`, `rate`, `packet-rate`, `queued-bytes`, `queued-packets`, `dropped`, `borrows`, `lends` e equivalentes `total-*`) não são drift. Qualquer outra propriedade desconhecida é semantic drift por padrão (fail-closed), nunca é descartada pelo DTO.
+- `total-limit-at`, `total-max-limit`, `total-priority`, `total-queue`, `total-burst-*` e `total-bucket-size` são modelados. Fora do valor default/unset, bloqueiam a gestão; a Fase 5 não tenta removê-los por PATCH.
+- Bandwidth ownership is derived from the exact DEVICE_QUEUE comment, not from DHCP lease comments.
 - Um target de device que divergiu da lease atual é drift. Só uma solicitação explícita de speed pode atualizá-lo, com ownership único, shape seguro, lease bound atual e sem conflito foreign.
 
 ## Fluxo operacional
 
-Cada execução toma o lock global `ROUTEROS:SIMPLE_QUEUE`, valida flags e credenciais separadas, relê RouterOS e metadata local, replana, recusa FastTrack/conflitos, faz a menor sequência de writes e realiza GET posterior. Ao criar parent, ele é criado antes de reparentar filhos. Ao remover parent, filhos MTMGR seguros são reparentados para `none` antes do DELETE.
+Cada execução toma o lock global `ROUTEROS:SIMPLE_QUEUE`, valida flags e credenciais separadas e executa exatamente: `fresh snapshot → OperationPlanningService.planFromSnapshot(intent, snapshot) → validate → mutate → fresh snapshot → verify`. Preview, fingerprint, `.id`, ownership e `ready` vindos do navegador nunca autorizam escrita. Ao criar parent, ele é criado antes de reparentar filhos. Ao remover parent, filhos MTMGR seguros são reparentados para `none` antes do DELETE.
 
 RouterOS não oferece transação para a sequência. Em falha parcial ou outcome desconhecido, o painel relê e reconcilia; não faz rollback ou retry cego. PUT/PATCH/DELETE só são considerados recuperados quando a leitura confirma o estado desejado (ou ausência, no DELETE).
 

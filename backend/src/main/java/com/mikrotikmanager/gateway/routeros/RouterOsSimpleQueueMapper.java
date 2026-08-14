@@ -1,6 +1,8 @@
 package com.mikrotikmanager.gateway.routeros;
 
 import com.mikrotikmanager.domain.SpeedLimit;
+import com.mikrotikmanager.domain.ManagedSimpleQueueSemantics;
+import com.mikrotikmanager.domain.RouterSimpleQueue;
 import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
 import com.mikrotikmanager.gateway.routeros.dto.RouterOsSimpleQueueDto;
 
@@ -38,7 +40,7 @@ public final class RouterOsSimpleQueueMapper {
         Map<String, SpeedLimit> portSpeeds = new LinkedHashMap<>();
         Set<String> ambiguousPorts = new HashSet<>();
         for (RouterOsSimpleQueueDto queue : queues) {
-            if (queue == null || isDisabledOrUntrustworthy(queue.disabled())) {
+            if (queue == null || !safeForRead(queue)) {
                 continue;
             }
 
@@ -73,7 +75,7 @@ public final class RouterOsSimpleQueueMapper {
         if (queues == null) return Map.of();
         Map<String, SpeedLimit> result = new LinkedHashMap<>(); Set<String> ambiguous = new HashSet<>();
         for (RouterOsSimpleQueueDto queue : queues) {
-            if (queue == null || isDisabledOrUntrustworthy(queue.disabled()) || isDisabledOrUntrustworthy(queue.dynamic())) continue;
+            if (queue == null || !safeForRead(queue)) continue;
             String mac = exactOwnedDevice(queue.comment());
             if (mac == null) continue;
             Optional<SpeedLimit> limit = RouterOsRateParser.parseSimpleQueueMaxLimit(queue.maxLimit());
@@ -89,6 +91,21 @@ public final class RouterOsSimpleQueueMapper {
         } catch (IllegalArgumentException exception) {
             // An unexpected boolean must not make a queue look active.
             return true;
+        }
+    }
+
+    /** The read model must not present a drifted owned queue as an applied managed speed. */
+    private static boolean safeForRead(RouterOsSimpleQueueDto q) {
+        try {
+            return ManagedSimpleQueueSemantics.isSafeManagedQueue(new RouterSimpleQueue(
+                    q.id(), q.name(), q.comment(), q.target(), RouterOsRateParser.parseSimpleQueueMaxLimit(q.maxLimit()).orElse(null),
+                    isDisabledOrUntrustworthy(q.disabled()), isDisabledOrUntrustworthy(q.dynamic()), isDisabledOrUntrustworthy(q.invalid()),
+                    q.parent(), q.limitAt(), q.priority(), q.queue(), q.burstLimit(), q.burstThreshold(), q.burstTime(),
+                    q.bucketSize(), q.time(), q.packetMarks(), q.dstAddress(), q.totalLimitAt(), q.totalMaxLimit(),
+                    q.totalPriority(), q.totalQueue(), q.totalBurstLimit(), q.totalBurstThreshold(), q.totalBurstTime(),
+                    q.totalBucketSize(), q.unknownFields().keySet()));
+        } catch (IllegalArgumentException ignored) {
+            return false;
         }
     }
 

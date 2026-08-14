@@ -60,7 +60,9 @@ public record RouterSnapshot(
                         .map(value -> fields(value.id(), value.name(), value.comment(), value.target(), value.maxLimit(), value.disabled(),
                                 value.dynamic(), value.invalid(), value.parent(), value.limitAt(), value.priority(), value.queue(),
                                 value.burstLimit(), value.burstThreshold(), value.burstTime(), value.bucketSize(), value.time(),
-                                value.packetMarks(), value.dstAddress())))
+                                value.packetMarks(), value.dstAddress(), value.totalLimitAt(), value.totalMaxLimit(),
+                                value.totalPriority(), value.totalQueue(), value.totalBurstLimit(), value.totalBurstThreshold(),
+                                value.totalBurstTime(), value.totalBucketSize(), value.unknownFields())))
                 + collection("firewallFilters", firewallFilters.stream()
                         .map(value -> fields(value.action(), value.chain(), value.comment(), value.disabled(), value.dynamic(),
                                 value.srcAddress(), value.srcAddressList(), value.srcMacAddress())))

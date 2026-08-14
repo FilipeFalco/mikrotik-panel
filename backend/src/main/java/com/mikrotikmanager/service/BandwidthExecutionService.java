@@ -1,11 +1,19 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.ManagedPort;
+import com.mikrotikmanager.domain.BandwidthLimitPolicy;
 import com.mikrotikmanager.domain.ManagedSimpleQueue;
+import com.mikrotikmanager.domain.ManagedSimpleQueueSemantics;
+import com.mikrotikmanager.domain.OperationPlan;
+import com.mikrotikmanager.domain.PlanConflict;
+import com.mikrotikmanager.domain.PlanPrecondition;
+import com.mikrotikmanager.domain.PlanSeverity;
 import com.mikrotikmanager.domain.RouterDevice;
 import com.mikrotikmanager.domain.RouterSimpleQueue;
 import com.mikrotikmanager.domain.RouterSnapshot;
 import com.mikrotikmanager.domain.SpeedLimit;
+import com.mikrotikmanager.domain.SetDeviceSpeedIntent;
+import com.mikrotikmanager.domain.SetPortSpeedIntent;
 import com.mikrotikmanager.gateway.BandwidthMutationGateway;
 import com.mikrotikmanager.gateway.ManagedResourceIdentifier;
 import com.mikrotikmanager.gateway.routeros.RouterOsWriteClientException;
@@ -27,7 +35,6 @@ import java.util.Objects;
  */
 @Service
 public final class BandwidthExecutionService {
-    private static final long MAX = 10_000_000_000L;
     private final RouterSnapshotService snapshots;
     private final ManagedPortRepository ports;
     private final BandwidthMutationGateway mutations;
@@ -36,21 +43,24 @@ public final class BandwidthExecutionService {
     private final PortService portService;
     private final DeviceService deviceService;
     private final AuditService audit;
+    private final OperationPlanningService planning;
 
     public BandwidthExecutionService(RouterSnapshotService snapshots, ManagedPortRepository ports,
                                      BandwidthMutationGateway mutations, OperationLockManager locks,
                                      MikrotikWriteGuard guard, PortService portService, DeviceService deviceService,
-                                     AuditService audit) {
+                                     AuditService audit, OperationPlanningService planning) {
         this.snapshots = Objects.requireNonNull(snapshots); this.ports = Objects.requireNonNull(ports);
         this.mutations = Objects.requireNonNull(mutations); this.locks = Objects.requireNonNull(locks);
         this.guard = Objects.requireNonNull(guard); this.portService = Objects.requireNonNull(portService);
         this.deviceService = Objects.requireNonNull(deviceService); this.audit = Objects.requireNonNull(audit);
+        this.planning = Objects.requireNonNull(planning);
     }
 
     public PortView setPortSpeed(String iface, SpeedLimit requested) {
         return locks.withLock("ROUTEROS:SIMPLE_QUEUE", () -> locks.withLock("PORT:" + iface, () -> {
             guard.checkBandwidthWriteAllowed(); validateLimit(requested);
             RouterSnapshot before = snapshots.capture();
+            requireExecutablePreflight(planning.planFromSnapshot(new SetPortSpeedIntent(iface, requested), before));
             if (before.fastTrackDetected()) throw error(ApiErrorCode.FASTTRACK_BYPASSES_SIMPLE_QUEUE, HttpStatus.CONFLICT,
                     "FastTrack ativo impede a aplicação segura deste limite por Simple Queue nesta fase.");
             ManagedPort local = ports.findByInterfaceName(iface).orElseThrow(() -> error(ApiErrorCode.PORT_NOT_FOUND, HttpStatus.NOT_FOUND, "Porta não encontrada."));
@@ -73,6 +83,7 @@ public final class BandwidthExecutionService {
         return locks.withLock("ROUTEROS:SIMPLE_QUEUE", () -> locks.withLock("DEVICE:" + mac, () -> {
             guard.checkBandwidthWriteAllowed(); validateLimit(requested);
             RouterSnapshot before = snapshots.capture();
+            requireExecutablePreflight(planning.planFromSnapshot(new SetDeviceSpeedIntent(mac, requested), before));
             if (before.fastTrackDetected()) throw error(ApiErrorCode.FASTTRACK_BYPASSES_SIMPLE_QUEUE, HttpStatus.CONFLICT,
                     "FastTrack ativo impede a aplicação segura deste limite por Simple Queue nesta fase.");
             RouterDevice device = uniqueDevice(before, mac);
@@ -93,7 +104,7 @@ public final class BandwidthExecutionService {
     private void setPort(RouterSnapshot snapshot, String iface, String network, SpeedLimit limit) {
         ManagedSimpleQueue desired = ManagedSimpleQueue.port(iface, network, limit);
         List<RouterSimpleQueue> owned = ownedPort(snapshot, iface); requireUnique(owned);
-        conflict(snapshot, network, desired.name(), snapshot, null);
+        conflictForPort(snapshot, network, desired, iface);
         List<RouterSimpleQueue> children = managedDeviceChildrenForPort(snapshot, iface);
         for (RouterSimpleQueue child : children) if (exceeds(limit, child.maxLimit())) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED, HttpStatus.CONFLICT, "Um limite individual de dispositivo ultrapassa o novo limite da porta.");
         if (owned.isEmpty()) {
@@ -126,7 +137,7 @@ public final class BandwidthExecutionService {
         if (parent != null) { requireSafe(parent, port.interfaceName(), false); if (exceeds(parent.maxLimit(), limit)) throw error(ApiErrorCode.QUEUE_PARENT_LIMIT_EXCEEDED, HttpStatus.CONFLICT, "O limite do dispositivo não pode ultrapassar o limite finito da porta."); parentName = parent.name(); }
         ManagedSimpleQueue desired = ManagedSimpleQueue.device(device.macAddress(), device.ipAddress(), parentName, limit);
         List<RouterSimpleQueue> owned = ownedDevice(snapshot, device.macAddress()); requireUnique(owned);
-        conflict(snapshot, desired.target(), desired.name(), snapshot, device.macAddress());
+        conflictForDevice(snapshot, desired, device.macAddress());
         if (owned.isEmpty()) writeCreate(desired, null);
         else { RouterSimpleQueue current = owned.getFirst(); requireSafe(current, null, true); if (!same(current, desired)) writeUpdate(current, desired); }
     }
@@ -158,22 +169,37 @@ public final class BandwidthExecutionService {
     private List<RouterSimpleQueue> managedDeviceChildrenForPort(RouterSnapshot s, String iface) { return s.devices().stream().filter(d -> iface.equals(d.interfaceName())).flatMap(d -> ownedDevice(s, d.macAddress()).stream()).toList(); }
     private boolean isManagedDevice(RouterSnapshot s, RouterSimpleQueue q) { return s.devices().stream().anyMatch(d -> ManagedResourceIdentifier.isOwnedByDevice(q.comment(), d.macAddress())); }
     private RouterDevice uniqueDevice(RouterSnapshot s, String mac) { List<RouterDevice> matches = s.devices().stream().filter(d -> mac.equals(d.macAddress()) && d.ipAddress() != null).toList(); if (matches.size() != 1) throw error(ApiErrorCode.DEVICE_NOT_FOUND, HttpStatus.CONFLICT, "A lease atual do dispositivo não é única e válida."); return matches.getFirst(); }
-    private void conflict(RouterSnapshot s, String target, String expectedName, RouterSnapshot ignored, String deviceMac) { for (RouterSimpleQueue q : s.simpleQueues()) { if (expectedName.equals(q.name()) && !(deviceMac != null && ManagedResourceIdentifier.isOwnedByDevice(q.comment(), deviceMac))) throw error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT, "O nome determinístico da queue já é usado por recurso não gerenciado."); if (overlap(target, q.target()) && !isExpectedManaged(s, q, deviceMac)) throw error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT, "Uma Simple Queue foreign ou dinâmica sobrepõe o target solicitado."); } }
-    private boolean isExpectedManaged(RouterSnapshot s, RouterSimpleQueue q, String mac) { if (mac != null && ManagedResourceIdentifier.isOwnedByDevice(q.comment(), mac)) return true; return s.devices().stream().anyMatch(d -> ManagedResourceIdentifier.isOwnedByDevice(q.comment(), d.macAddress())) || s.interfaces().stream().anyMatch(i -> ManagedResourceIdentifier.isOwnedByPort(q.comment(), i.name())); }
+    private void conflictForPort(RouterSnapshot s, String target, ManagedSimpleQueue expected, String iface) {
+        for (RouterSimpleQueue q : s.simpleQueues()) {
+            boolean expectedOwned = ManagedSimpleQueueSemantics.isOwnedPort(q, iface);
+            if (expected.name().equals(q.name()) && !expectedOwned) throw foreignConflict();
+            if (overlap(target, q.target()) && !expectedOwned && !isAnyManagedQueue(s, q)) throw foreignConflict();
+        }
+    }
+    private void conflictForDevice(RouterSnapshot s, ManagedSimpleQueue expected, String mac) {
+        for (RouterSimpleQueue q : s.simpleQueues()) {
+            boolean expectedOwned = ManagedSimpleQueueSemantics.isOwnedDevice(q, mac);
+            if (expected.name().equals(q.name()) && !expectedOwned) throw foreignConflict();
+            if (overlap(expected.target(), q.target()) && !expectedOwned && !isAnyManagedQueue(s, q)) throw foreignConflict();
+        }
+    }
+    private ApiException foreignConflict() { return error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT, "Uma Simple Queue foreign ou dinâmica conflita com o recurso esperado."); }
+    private boolean isAnyManagedQueue(RouterSnapshot s, RouterSimpleQueue q) { return s.devices().stream().anyMatch(d -> ManagedSimpleQueueSemantics.isOwnedDevice(q, d.macAddress())) || s.interfaces().stream().anyMatch(i -> ManagedSimpleQueueSemantics.isOwnedPort(q, i.name())); }
     private boolean overlap(String a, String b) { CidrRange one = CidrValidator.parseRange(a); CidrRange two = CidrValidator.parseRange(b); return one != null && two != null && one.overlaps(two); }
     private ManagedSimpleQueue withParent(RouterSimpleQueue q, String parent) { return new ManagedSimpleQueue(q.name(), q.comment(), q.target(), parent, q.maxLimit()); }
-    private boolean same(RouterSimpleQueue q, ManagedSimpleQueue d) { return d.name().equals(q.name()) && d.comment().equals(q.comment()) && d.target().equals(q.target()) && d.parent().equals(parent(q)) && d.maxLimit().equals(q.maxLimit()) && safe(q); }
-    private String parent(RouterSimpleQueue q) { return q.parent() == null || q.parent().isBlank() ? "none" : q.parent(); }
-    private void requireSafe(RouterSimpleQueue q, String iface, boolean device) { if (!safe(q) || (iface != null && !ManagedResourceIdentifier.isOwnedByPort(q.comment(), iface)) || (device && q.dynamic())) throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT, "A Simple Queue MTMGR divergiu da forma segura e não será reparada automaticamente."); }
-    private boolean safe(RouterSimpleQueue q) { return q != null && !q.disabled() && !q.dynamic() && !q.invalid() && q.maxLimit() != null && inactive(q.limitAt()) && inactive(q.burstLimit()) && inactive(q.burstThreshold()) && inactive(q.burstTime()) && inactive(q.time()) && inactive(q.packetMarks()) && inactive(q.dstAddress()) && bucketDefault(q.bucketSize()) && queueDefault(q.queue()) && priorityDefault(q.priority()); }
-    private boolean inactive(String value) { return value == null || value.isBlank() || "0".equals(value) || "0/0".equals(value) || "0s/0s".equals(value); }
-    private boolean bucketDefault(String value) { return value == null || value.isBlank() || "0.1".equals(value) || "0.1/0.1".equals(value); }
-    private boolean queueDefault(String value) { return value == null || value.isBlank() || "default/default".equals(value) || "default-small/default-small".equals(value); }
-    private boolean priorityDefault(String value) { return value == null || value.isBlank() || "8".equals(value) || "8/8".equals(value); }
+    private boolean same(RouterSimpleQueue q, ManagedSimpleQueue d) { return ManagedSimpleQueueSemantics.matchesDesired(q, d); }
+    private String parent(RouterSimpleQueue q) { return ManagedSimpleQueueSemantics.parent(q); }
+    private void requireSafe(RouterSimpleQueue q, String iface, boolean device) { if (!ManagedSimpleQueueSemantics.isSafeManagedQueue(q) || (iface != null && !ManagedSimpleQueueSemantics.isOwnedPort(q, iface)) || (device && q.dynamic())) throw error(ApiErrorCode.MANAGED_QUEUE_DRIFT, HttpStatus.CONFLICT, "A Simple Queue MTMGR divergiu da forma segura e não será reparada automaticamente."); }
     private boolean exceeds(SpeedLimit parent, SpeedLimit child) { return parent != null && child != null && ((parent.downloadBps() > 0 && child.downloadBps() > parent.downloadBps()) || (parent.uploadBps() > 0 && child.uploadBps() > parent.uploadBps())); }
     private void requireUnique(List<RouterSimpleQueue> queues) { if (queues.size() > 1) throw error(ApiErrorCode.QUEUE_OWNERSHIP_AMBIGUOUS, HttpStatus.CONFLICT, "Há mais de uma Simple Queue com ownership exato."); }
     private void requireManagedPort(ManagedPort port) { if (!port.enabled() || port.role() != com.mikrotikmanager.domain.ManagedPortRole.CLIENT || !CidrValidator.isValid(port.network())) throw error(ApiErrorCode.QUEUE_PARENT_INVALID, HttpStatus.CONFLICT, "A porta não é uma porta CLIENT com CIDR válido."); }
-    private void validateLimit(SpeedLimit l) { if (l == null || l.downloadBps() < 0 || l.uploadBps() < 0 || l.downloadBps() > MAX || l.uploadBps() > MAX || (!l.isUnlimited() && (l.downloadBps() == 0 || l.uploadBps() == 0))) throw error(ApiErrorCode.INVALID_SPEED_LIMIT, HttpStatus.BAD_REQUEST, "Limite inválido: nesta fase limite parcial ilimitado não é serializado sem validação física oficial."); }
+    private void validateLimit(SpeedLimit l) { if (!BandwidthLimitPolicy.isValidPhase5Limit(l)) throw error(ApiErrorCode.INVALID_SPEED_LIMIT, HttpStatus.BAD_REQUEST, "Limite inválido: nesta fase limite parcial ilimitado não é serializado sem validação física oficial."); }
+    private void requireExecutablePreflight(OperationPlan plan) {
+        boolean blockingConflict = plan.conflicts().stream().anyMatch(c -> c.severity() == PlanSeverity.BLOCKING);
+        boolean blockingPrecondition = plan.preconditions().stream().anyMatch(p -> p.severity() == PlanSeverity.BLOCKING && !p.satisfied());
+        if (!plan.readyForFutureExecution() || blockingConflict || blockingPrecondition)
+            throw error(ApiErrorCode.QUEUE_FOREIGN_CONFLICT, HttpStatus.CONFLICT, "O preflight fresco não autorizou a alteração de Simple Queue.");
+    }
     private boolean validId(String value) { return value != null && value.matches("\\*[A-Za-z0-9]+(?:[A-Za-z0-9]+)?"); }
     private void failVerify() { throw error(ApiErrorCode.QUEUE_POST_VERIFY_FAILED, HttpStatus.BAD_GATEWAY, "A leitura posterior não confirmou a Simple Queue desejada."); }
     private ApiException error(ApiErrorCode code, HttpStatus status, String message) { return new ApiException(code, status, message); }

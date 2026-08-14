@@ -50,6 +50,10 @@ Para banda, a porta usa `target=<network>`, `parent=none` e ownership
 `MTMGR:DEVICE:<MAC>` e torna-se filho da fila da porta quando ela possui limite.
 `SpeedLimit(download, upload)` é codificado como RouterOS `max-limit=upload/download`.
 FastTrack ativo bloqueia somente a execução de banda; não é modificado.
+Ownership de bandwidth do dispositivo vem exclusivamente do comentário exato
+da `DEVICE_QUEUE`, nunca do comentário DHCP. Campos desconhecidos de queue são
+tratados como drift semântico, exceto counters RouterOS documentados como read-only.
+`0/0` remove o limite; um limite finito exige download e upload positivos.
 O detalhe operacional está em
 [docs/routeros-device-blocking.md](docs/routeros-device-blocking.md).
 O contrato completo da Fase 5 está em [docs/routeros-bandwidth-control.md](docs/routeros-bandwidth-control.md).

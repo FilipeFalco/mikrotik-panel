@@ -1,6 +1,7 @@
 package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.BlockDeviceIntent;
+import com.mikrotikmanager.domain.BandwidthLimitPolicy;
 import com.mikrotikmanager.domain.BlockingStrategy;
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
@@ -60,7 +61,6 @@ import java.util.stream.Collectors;
 @Service
 public class OperationPlanningService {
     private static final Logger log = LoggerFactory.getLogger(OperationPlanningService.class);
-    private static final long MAX_LIMIT_BPS = 10_000_000_000L;
     private static final String EXECUTION_REVALIDATION_REASON =
             "Este plano é somente preview; a execução real sempre reconstrói o estado e revalida ownership antes da escrita.";
 
@@ -154,7 +154,7 @@ public class OperationPlanningService {
 
     private OperationPlan planBlock(BlockDeviceIntent intent, RouterSnapshot snapshot,
                                     ReconciliationReport reconciliation, Map<String, ManagedPort> localPorts) {
-        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, localPorts);
+        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, reconciliation, localPorts);
         List<PlanPrecondition> preconditions = devicePreconditions(device, snapshot);
         List<PlanWarning> warnings = new ArrayList<>();
         List<PlanConflict> conflicts = new ArrayList<>();
@@ -188,7 +188,7 @@ public class OperationPlanningService {
 
     private OperationPlan planUnblock(UnblockDeviceIntent intent, RouterSnapshot snapshot,
                                       ReconciliationReport reconciliation, Map<String, ManagedPort> localPorts) {
-        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, localPorts);
+        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, reconciliation, localPorts);
         List<PlanPrecondition> preconditions = devicePreconditions(device, snapshot);
         List<PlanWarning> warnings = new ArrayList<>();
         List<PlanConflict> conflicts = new ArrayList<>();
@@ -249,7 +249,7 @@ public class OperationPlanningService {
 
     private OperationPlan planDeviceSpeed(SetDeviceSpeedIntent intent, RouterSnapshot snapshot,
                                           ReconciliationReport reconciliation, Map<String, ManagedPort> localPorts) {
-        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, localPorts);
+        DeviceContext device = resolveDevice(intent.macAddress(), snapshot, reconciliation, localPorts);
         List<PlanPrecondition> preconditions = devicePreconditions(device, snapshot);
         List<PlanWarning> warnings = new ArrayList<>();
         List<PlanConflict> conflicts = new ArrayList<>();
@@ -259,28 +259,30 @@ public class OperationPlanningService {
         PortContext parentPort = resolvePort(device.interfaceName(), snapshot, reconciliation, localPorts);
         addPortPreconditions(parentPort, preconditions);
         addQueueReconciliationFindings(parentPort, preconditions, warnings, conflicts);
+        addQueueReconciliationFindings(device.deviceQueueResource(), preconditions, warnings, conflicts);
         addDeviceParentLimitPrecondition(parentPort, intent.requestedLimit(), requestedLimitValid, preconditions);
         addFastTrackWarning(snapshot, preconditions, warnings);
 
-        SpeedLimit currentLimit = device.routerDevice() == null ? null : device.routerDevice().speedLimit();
+        // Bandwidth ownership and observed speed are derived solely from the exact DEVICE_QUEUE.
+        SpeedLimit currentLimit = device.deviceQueue() == null ? SpeedLimit.UNLIMITED : device.deviceQueue().maxLimit();
         boolean changeRequired = requestedLimitValid && device.hasUsableDevice()
                 && !Objects.equals(currentLimit, intent.requestedLimit());
         if (changeRequired && currentLimit != null && !currentLimit.isUnlimited()
-                && device.ownership() != ResourceOwnership.MANAGED) {
-            conflicts.add(new PlanConflict("UNOWNED_DEVICE_LIMIT", "DHCP_LEASE", device.target().displayName(),
-                    device.ipAddress(), device.ownership(),
+                && device.deviceQueueOwnership() != ResourceOwnership.MANAGED) {
+            conflicts.add(new PlanConflict("UNOWNED_DEVICE_LIMIT", "DEVICE_QUEUE", device.target().displayName(),
+                    device.ipAddress(), device.deviceQueueOwnership(),
                     "Há um limite de dispositivo observado sem ownership exato. A aplicação não irá adotá-lo ou sobrescrevê-lo.",
                     PlanSeverity.BLOCKING));
         } else if (!changeRequired && currentLimit != null && !currentLimit.isUnlimited()
-                && device.ownership() != ResourceOwnership.MANAGED) {
+                && device.deviceQueueOwnership() != ResourceOwnership.MANAGED) {
             warnings.add(new PlanWarning("UNOWNED_DEVICE_LIMIT_NO_OP",
                     "O limite atual não comprovadamente gerenciado já corresponde ao pedido; o plano não propõe alteração.",
                     PlanSeverity.WARNING));
         }
 
         List<PlanChange> changes = deviceSpeedChanges(device, requestedLimitValid, changeRequired, conflicts);
-        return build(intent, snapshot, device.target(), device.currentState(null),
-                device.desiredSpeedState(intent.requestedLimit()), device.ownership(), preconditions, warnings, conflicts,
+        return build(intent, snapshot, device.target(), device.currentSpeedState(currentLimit),
+                device.desiredSpeedState(intent.requestedLimit()), device.deviceQueueOwnership(), preconditions, warnings, conflicts,
                 changes, changeRequired);
     }
 
@@ -311,7 +313,7 @@ public class OperationPlanningService {
         );
     }
 
-    private DeviceContext resolveDevice(String rawMacAddress, RouterSnapshot snapshot,
+    private DeviceContext resolveDevice(String rawMacAddress, RouterSnapshot snapshot, ReconciliationReport reconciliation,
                                         Map<String, ManagedPort> localPorts) {
         String normalizedMac = normalizeMac(rawMacAddress);
         if (normalizedMac == null) {
@@ -331,14 +333,19 @@ public class OperationPlanningService {
                 .filter(candidate -> interfaceName.equals(candidate.name()))
                 .findFirst()
                 .orElse(null);
-        ResourceOwnership ownership = lease == null ? ResourceOwnership.UNKNOWN
-                : ManagedResourceIdentifier.ownershipForDeviceComment(lease.comment(), normalizedMac);
+        ReconciliationResource deviceQueueResource = reconciliation.resources().stream()
+                .filter(resource -> "DEVICE_QUEUE".equals(resource.resourceType()) && normalizedMac.equals(resource.resourceKey()))
+                .findFirst().orElse(null);
+        List<RouterSimpleQueue> deviceQueues = snapshot.simpleQueues().stream()
+                .filter(queue -> ManagedResourceIdentifier.isOwnedByDevice(queue.comment(), normalizedMac)).toList();
+        RouterSimpleQueue deviceQueue = deviceQueues.size() == 1 ? deviceQueues.getFirst() : null;
+        ResourceOwnership deviceQueueOwnership = deviceQueueResource == null ? ResourceOwnership.UNKNOWN : deviceQueueResource.ownership();
         List<BlockResource> blockResources = detectBlockResources(lease, device, snapshot, normalizedMac);
         List<RouterFirewallFilter> managedFirewallRules = snapshot.firewallFilters().stream()
                 .filter(filter -> ManagedDeviceBlockRule.isOwned(filter, normalizedMac))
                 .toList();
         return new DeviceContext(rawMacAddress, normalizedMac, leases, devices, lease, device, interfaceName, localPort,
-                routerInterface, ownership, blockResources, managedFirewallRules);
+                routerInterface, deviceQueueOwnership, deviceQueue, deviceQueueResource, blockResources, managedFirewallRules);
     }
 
     /**
@@ -550,7 +557,11 @@ public class OperationPlanningService {
 
     private void addQueueReconciliationFindings(PortContext port, List<PlanPrecondition> preconditions,
                                                 List<PlanWarning> warnings, List<PlanConflict> conflicts) {
-        ReconciliationResource resource = port.reconciliationResource();
+        addQueueReconciliationFindings(port.reconciliationResource(), preconditions, warnings, conflicts);
+    }
+
+    private void addQueueReconciliationFindings(ReconciliationResource resource, List<PlanPrecondition> preconditions,
+                                                List<PlanWarning> warnings, List<PlanConflict> conflicts) {
         boolean available = resource != null;
         preconditions.add(new PlanPrecondition("QUEUE_RECONCILIATION_AVAILABLE",
                 "A fila futura da porta foi analisada a partir do mesmo snapshot.", available, PlanSeverity.BLOCKING));
@@ -697,11 +708,7 @@ public class OperationPlanningService {
     }
 
     private boolean validLimit(SpeedLimit requested) {
-        return requested != null
-                && requested.downloadBps() >= 0
-                && requested.uploadBps() >= 0
-                && requested.downloadBps() <= MAX_LIMIT_BPS
-                && requested.uploadBps() <= MAX_LIMIT_BPS;
+        return BandwidthLimitPolicy.isValidPhase5Limit(requested);
     }
 
     /** Returns whether a finite parent limit is exceeded by a child/requested limit. */
@@ -743,13 +750,15 @@ public class OperationPlanningService {
             String interfaceName,
             ManagedPort localPort,
             RouterInterface routerInterface,
-            ResourceOwnership ownership,
+            ResourceOwnership deviceQueueOwnership,
+            RouterSimpleQueue deviceQueue,
+            ReconciliationResource deviceQueueResource,
             List<BlockResource> blockResources,
             List<RouterFirewallFilter> managedFirewallRules
     ) {
         private static DeviceContext invalid(String requestedMac) {
             return new DeviceContext(requestedMac, null, List.of(), List.of(), null, null,
-                    null, null, null, ResourceOwnership.UNKNOWN, List.of(), List.of());
+                    null, null, null, ResourceOwnership.UNKNOWN, null, null, List.of(), List.of());
         }
 
         private boolean hasUsableDevice() {
@@ -818,6 +827,12 @@ public class OperationPlanningService {
         private PlanState desiredSpeedState(SpeedLimit requestedLimit) {
             return new PlanState(displayName(), normalizedMac, ipAddress(), interfaceName,
                     localPort == null ? null : localPort.network(), requestedLimit,
+                    routerDevice == null && lease == null ? null : currentlyBlocked(), null);
+        }
+
+        private PlanState currentSpeedState(SpeedLimit currentLimit) {
+            return new PlanState(displayName(), normalizedMac, ipAddress(), interfaceName,
+                    localPort == null ? null : localPort.network(), currentLimit,
                     routerDevice == null && lease == null ? null : currentlyBlocked(), null);
         }
     }

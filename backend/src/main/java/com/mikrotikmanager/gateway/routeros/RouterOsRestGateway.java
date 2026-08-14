@@ -200,7 +200,12 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
                             RouterOsValueParser.optionalText(queue.burstLimit()), RouterOsValueParser.optionalText(queue.burstThreshold()),
                             RouterOsValueParser.optionalText(queue.burstTime()), RouterOsValueParser.optionalText(queue.bucketSize()),
                             RouterOsValueParser.optionalText(queue.time()), RouterOsValueParser.optionalText(queue.packetMarks()),
-                            RouterOsValueParser.optionalText(queue.dstAddress())))
+                            RouterOsValueParser.optionalText(queue.dstAddress()),
+                            RouterOsValueParser.optionalText(queue.totalLimitAt()), RouterOsValueParser.optionalText(queue.totalMaxLimit()),
+                            RouterOsValueParser.optionalText(queue.totalPriority()), RouterOsValueParser.optionalText(queue.totalQueue()),
+                            RouterOsValueParser.optionalText(queue.totalBurstLimit()), RouterOsValueParser.optionalText(queue.totalBurstThreshold()),
+                            RouterOsValueParser.optionalText(queue.totalBurstTime()), RouterOsValueParser.optionalText(queue.totalBucketSize()),
+                            queue.unknownFields().keySet()))
                     .toList();
             List<RouterOsFirewallFilterDto> filterDtos = restClient.getFirewallFilters(RouterOsFirewallFilterDto.class);
             List<RouterFirewallFilter> filters = filterDtos.stream()
@@ -226,8 +231,9 @@ public final class RouterOsRestGateway implements MikrotikGateway, MikrotikDiagn
 
     private List<RouterDevice> withDeviceQueueSpeeds(List<RouterDevice> devices, Map<String, SpeedLimit> speeds) {
         return devices.stream().map(device -> {
-            SpeedLimit speed = speeds.get(device.macAddress());
-            return speed == null ? device : new RouterDevice(device.leaseId(), device.macAddress(), device.hostname(), device.ipAddress(),
+            // DHCP lease rate-limit is an observation only in Phase 5. It is never a managed speed source.
+            SpeedLimit speed = speeds.getOrDefault(device.macAddress(), SpeedLimit.UNLIMITED);
+            return new RouterDevice(device.leaseId(), device.macAddress(), device.hostname(), device.ipAddress(),
                     device.dhcpServer(), device.interfaceName(), device.status(), device.blocked(), device.leaseComment(), speed,
                     device.traffic(), device.lastSeenAt());
         }).toList();

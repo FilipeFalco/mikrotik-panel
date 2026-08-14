@@ -2,6 +2,7 @@ package com.mikrotikmanager.service;
 
 import com.mikrotikmanager.domain.ManagedPort;
 import com.mikrotikmanager.domain.ManagedPortRole;
+import com.mikrotikmanager.domain.ManagedSimpleQueueSemantics;
 import com.mikrotikmanager.domain.PlanSeverity;
 import com.mikrotikmanager.domain.ReconciliationFinding;
 import com.mikrotikmanager.domain.ReconciliationReport;
@@ -138,8 +139,8 @@ public class ReconciliationService {
             drift.add(new ReconciliationFinding("QUEUE_LIMIT_UNREADABLE", "O max-limit observado não pôde ser interpretado com segurança.",
                     PlanSeverity.BLOCKING));
         }
-        ReconciliationStatus status = drift.isEmpty() ? ReconciliationStatus.IN_SYNC : ReconciliationStatus.DRIFTED;
         addQueueSemanticDrift(queue, drift);
+        ReconciliationStatus status = drift.isEmpty() ? ReconciliationStatus.IN_SYNC : ReconciliationStatus.DRIFTED;
         return new ReconciliationResource("PORT_QUEUE", port.interfaceName(), "Queue da porta " + port.interfaceName(),
                 ResourceOwnership.MANAGED, status, expectedName, port.network(), queue.name(), queue.target(), false, drift);
     }
@@ -163,10 +164,12 @@ public class ReconciliationService {
         return new ReconciliationResource(type, key, "Queue " + key, ownership, status, expectedName, ip == null ? null : ip + "/32", observed.name(), observed.target(), conflict, List.of(new ReconciliationFinding(code, description, severity)));
     }
     private void addQueueSemanticDrift(RouterSimpleQueue queue, List<ReconciliationFinding> drift) {
-        if (queue.invalid() || queue.dynamic()) drift.add(new ReconciliationFinding("QUEUE_NON_MANAGEABLE", "Fila dinâmica ou inválida nunca é gerenciada.", PlanSeverity.BLOCKING));
-        if (unexpected(queue.limitAt()) || unexpected(queue.burstLimit()) || unexpected(queue.burstThreshold()) || unexpected(queue.burstTime()) || unexpected(queue.time()) || unexpected(queue.packetMarks()) || unexpected(queue.dstAddress())) drift.add(new ReconciliationFinding("MANAGED_QUEUE_DRIFT", "Campos de matching, CIR, burst ou tempo fora do escopo foram detectados.", PlanSeverity.BLOCKING));
+        if (queue.maxLimit() != null && !ManagedSimpleQueueSemantics.isSafeManagedQueue(queue)) {
+            drift.add(new ReconciliationFinding("MANAGED_QUEUE_DRIFT",
+                    "Campos de matching, CIR, burst, total, scheduling ou propriedade desconhecida estão fora do estado exato gerenciado.",
+                    PlanSeverity.BLOCKING));
+        }
     }
-    private boolean unexpected(String value) { return value != null && !value.isBlank() && !"0".equals(value) && !"0/0".equals(value) && !"0s/0s".equals(value); }
 
     private ReconciliationSummary summarize(List<ReconciliationResource> resources) {
         return new ReconciliationSummary(

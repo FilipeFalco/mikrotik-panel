@@ -1,9 +1,10 @@
 # Arquitetura — MikroTik Local Manager
 
-## Escopo atual: Fase 4
+## Escopo atual: Fase 5
 
-A Fase 4 acrescenta execução real somente para bloquear e liberar dispositivos
-com a estratégia `FIREWALL_MAC_RULE`. O restante da aplicação continua usando
+A Fase 4 acrescenta execução real para bloquear e liberar dispositivos
+com a estratégia `FIREWALL_MAC_RULE`; a Fase 5 acrescenta somente Simple Queues
+allowlisted. O restante da aplicação continua usando
 leituras RouterOS e escrita local no SQLite. Não existe executor genérico de
 RouterOS.
 

@@ -41,6 +41,7 @@ function isDeviceBlockOperation(plan: OperationPlan): boolean {
  */
 export function canConfirmOperationPlan(plan: OperationPlan, executionEnabled: boolean): boolean {
   return executionEnabled
+    && plan.readyForFutureExecution
     && plan.changeRequired
     && !plan.preconditions.some((precondition) => precondition.severity === 'BLOCKING' && !precondition.satisfied)
     && !plan.conflicts.some((conflict) => conflict.severity === 'BLOCKING');
@@ -48,6 +49,7 @@ export function canConfirmOperationPlan(plan: OperationPlan, executionEnabled: b
 
 function confirmationDisabledReason(plan: OperationPlan, executionEnabled: boolean): string | null {
   if (!executionEnabled) return 'A execução desta operação está desabilitada pela capability atual. O preview continua disponível.';
+  if (!plan.readyForFutureExecution) return 'Confirmação desabilitada: o backend marcou o preview como não pronto para futura execução.';
   if (!plan.changeRequired) return 'Confirmação desabilitada: o snapshot atual indica que nenhuma alteração é necessária.';
   if (plan.preconditions.some((precondition) => precondition.severity === 'BLOCKING' && !precondition.satisfied)) {
     return 'Confirmação desabilitada: existe uma pré-condição BLOCKING não atendida.';
